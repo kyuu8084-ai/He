@@ -847,32 +847,24 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="w-full max-w-lg bg-zinc-900/95 border border-white/20 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden flex flex-col text-white"
+              className="w-full max-w-lg bg-[#171310] border border-[#c5a059]/35 rounded-3xl p-6 sm:p-8 shadow-[0_25px_80px_rgba(0,0,0,0.9)] relative overflow-hidden flex flex-col text-[#f5f0e6] font-serif"
             >
-              {/* Top Accent Line */}
-              <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r transition-all duration-300 ${
-                selectedRoomTab === 'community' 
-                  ? 'from-emerald-400 via-teal-400 to-cyan-400' 
-                  : 'from-purple-500 via-pink-500 to-indigo-500'
-              }`} />
+              {/* Classical Top Accent Filigree Line */}
+              <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-transparent via-[#c5a059] to-transparent shadow-[0_0_12px_rgba(197,160,89,0.5)]" />
 
               {/* Modal Header */}
               <div className="flex items-start justify-between mb-6">
                 <div className="flex items-center gap-3.5">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${
-                    selectedRoomTab === 'community' 
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-                      : 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-                  }`}>
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-gradient-to-br from-[#2c2219] to-[#18130e] border border-[#c5a059]/50 text-[#dfb76c] shadow-[0_0_15px_rgba(197,160,89,0.2)]">
                     <VideoIcon size={22} />
                   </div>
                   <div>
-                    <h3 className="text-xl font-bold tracking-tight">
-                      {language === 'vi' ? 'Tham gia phòng học' : 'Join Study Space'}
+                    <h3 className="text-xl sm:text-2xl font-serif font-bold text-[#f5f0e6] tracking-tight">
+                      {language === 'vi' ? 'Không Gian Học Tập' : 'Join Study Space'}
                     </h3>
-                    <p className="text-xs text-white/50 mt-0.5">
+                    <p className="text-xs text-[#a89f91] italic font-serif mt-0.5">
                       {language === 'vi' 
-                        ? 'Chọn hình thức phòng học tập phù hợp với mục tiêu' 
+                        ? 'Lựa chọn không gian yên tĩnh và tập trung cùng bạn học' 
                         : 'Choose the study environment for your focus session'}
                     </p>
                   </div>
@@ -882,7 +874,7 @@ export default function App() {
                     setIsRoomSelectModalOpen(false);
                     setRoomModalError(null);
                   }}
-                  className="p-2 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors cursor-pointer"
+                  className="p-2 rounded-full hover:bg-[#c5a059]/20 text-[#a89f91] hover:text-[#f5f0e6] transition-colors cursor-pointer"
                 >
                   <X size={20} />
                 </button>
@@ -890,14 +882,14 @@ export default function App() {
 
               {/* Error Banner */}
               {roomModalError && (
-                <div className="mb-5 px-4 py-3 rounded-2xl bg-red-500/20 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
-                  <Shield size={14} className="shrink-0" />
+                <div className="mb-5 px-4 py-3 rounded-xl bg-[#2b1313] border border-[#a84444]/60 text-[#fca5a5] text-xs flex items-center gap-2 font-serif">
+                  <Shield size={14} className="shrink-0 text-red-400" />
                   <span>{roomModalError}</span>
                 </div>
               )}
 
-              {/* Tab Selector: Community vs Private */}
-              <div className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-black/40 border border-white/10 mb-6">
+              {/* Tab Selector: Community vs Private (Classical Wood & Brass Segmented Control) */}
+              <div className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-[#0f0c0a] border border-[#c5a059]/30 mb-6 font-serif">
                 <button
                   type="button"
                   onClick={() => {
@@ -905,13 +897,13 @@ export default function App() {
                     setSelectedRoomTab('community');
                     setRoomModalError(null);
                   }}
-                  className={`py-3 px-4 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  className={`py-3 px-4 rounded-xl text-xs font-serif uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
                     selectedRoomTab === 'community'
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20 font-black'
-                      : 'text-white/60 hover:text-white hover:bg-white/5'
+                      ? 'bg-gradient-to-b from-[#2e2319] to-[#1e1711] text-[#f5f0e6] border border-[#c5a059]/60 shadow-[0_2px_12px_rgba(0,0,0,0.6)] font-bold'
+                      : 'text-[#9c9181] hover:text-[#f5f0e6] hover:bg-[#1f1914]'
                   }`}
                 >
-                  <Globe size={15} />
+                  <Globe size={15} className={selectedRoomTab === 'community' ? 'text-[#dfb76c]' : ''} />
                   <span>{language === 'vi' ? 'Phòng cộng đồng' : 'Community Room'}</span>
                 </button>
                 <button
@@ -921,14 +913,14 @@ export default function App() {
                     setSelectedRoomTab('private');
                     setRoomModalError(null);
                   }}
-                  className={`py-3 px-4 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  className={`py-3 px-4 rounded-xl text-xs font-serif uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
                     selectedRoomTab === 'private'
-                      ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-lg shadow-purple-500/25 font-black'
-                      : 'text-white/60 hover:text-white hover:bg-white/5'
+                      ? 'bg-gradient-to-b from-[#2e2319] to-[#1e1711] text-[#f5f0e6] border border-[#c5a059]/60 shadow-[0_2px_12px_rgba(0,0,0,0.6)] font-bold'
+                      : 'text-[#9c9181] hover:text-[#f5f0e6] hover:bg-[#1f1914]'
                   }`}
                 >
-                  <Lock size={15} />
-                  <span>{language === 'vi' ? 'Phòng riêng tư' : 'Private (PIN)'}</span>
+                  <Lock size={15} className={selectedRoomTab === 'private' ? 'text-[#dfb76c]' : ''} />
+                  <span>{language === 'vi' ? 'Phòng riêng tư (PIN)' : 'Private (PIN)'}</span>
                 </button>
               </div>
 
@@ -936,20 +928,20 @@ export default function App() {
               {selectedRoomTab === 'community' && (
                 <div className="space-y-4">
                   {/* Default Main Hall Card */}
-                  <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-transparent border border-emerald-500/30 flex flex-col gap-3">
+                  <div className="p-5 rounded-2xl bg-[#1f1812] border border-[#c5a059]/30 flex flex-col gap-3 shadow-inner">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                        <span className="text-sm font-bold text-emerald-300">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#dfb76c] animate-pulse" />
+                        <span className="text-sm font-serif font-bold text-[#dfb76c]">
                           {language === 'vi' ? 'Hội trường tự học chung' : 'Main Study Hall'}
                         </span>
                       </div>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      <span className="text-[10px] font-serif uppercase tracking-wider px-2 py-0.5 rounded-md bg-[#2d2319] text-[#dfb76c] border border-[#c5a059]/40">
                         {language === 'vi' ? 'Công khai • Không cần PIN' : 'Public • No PIN'}
                       </span>
                     </div>
 
-                    <p className="text-xs text-white/60 leading-relaxed">
+                    <p className="text-xs text-[#c4b9a9] leading-relaxed font-serif">
                       {language === 'vi'
                         ? 'Không gian học tập chính, kết nối cùng bạn bè và sinh viên khắp nơi. Bật nhạc lofi, camera hoặc chia sẻ màn hình bất cứ lúc nào.'
                         : 'The primary open space to study alongside students worldwide. Relax with lofi ambience and focused energy.'}
@@ -959,11 +951,11 @@ export default function App() {
                       type="button"
                       disabled={isVerifyingRoom}
                       onClick={() => handleEnterRoom('main-study-hall', undefined, false, 'main')}
-                      className="mt-1 w-full py-3 rounded-xl bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed text-black text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-emerald-400/20 flex items-center justify-center gap-2 cursor-pointer"
+                      className="mt-1 w-full py-3 rounded-xl bg-gradient-to-r from-[#b38a3e] via-[#dfb76c] to-[#b38a3e] hover:from-[#c59a4a] hover:via-[#ebd08c] hover:to-[#c59a4a] disabled:opacity-50 disabled:cursor-not-allowed text-[#140f0a] text-xs font-serif font-bold uppercase tracking-widest transition-all shadow-[0_4px_20px_rgba(197,160,89,0.3)] flex items-center justify-center gap-2 cursor-pointer border border-[#f5dfa3]/40"
                     >
                       {isVerifyingRoom && verifyingAction === 'main' ? (
                         <>
-                          <Loader2 size={15} className="animate-spin" />
+                          <Loader2 size={15} className="animate-spin text-[#140f0a]" />
                           <span>{language === 'vi' ? 'Đang kết nối...' : 'Connecting...'}</span>
                         </>
                       ) : (
@@ -977,10 +969,10 @@ export default function App() {
 
                   {/* Or Custom Public Room */}
                   <div className="pt-2">
-                    <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-white/40 uppercase tracking-wider">
-                      <div className="h-px bg-white/10 flex-1" />
+                    <div className="flex items-center gap-2 mb-2 text-xs font-serif text-[#8a8071] uppercase tracking-wider">
+                      <div className="h-px bg-[#c5a059]/20 flex-1" />
                       <span>{language === 'vi' ? 'hoặc vào phòng cộng đồng khác' : 'or enter custom public room'}</span>
-                      <div className="h-px bg-white/10 flex-1" />
+                      <div className="h-px bg-[#c5a059]/20 flex-1" />
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -993,13 +985,13 @@ export default function App() {
                           if (e.key === 'Enter' && !isVerifyingRoom) handleEnterRoom(customPublicRoom || 'main-study-hall', undefined, false, 'custom');
                         }}
                         placeholder={language === 'vi' ? 'Nhập tên phòng (VD: math-club, luyen-thi)...' : 'Room name (e.g. math-club, dev-squad)...'}
-                        className="flex-1 bg-black/50 border border-white/20 rounded-xl px-4 py-2.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-emerald-400 transition-colors disabled:opacity-50"
+                        className="flex-1 bg-[#100d0b] border border-[#c5a059]/30 rounded-xl px-4 py-2.5 text-xs text-[#f5f0e6] placeholder-[#8a8071]/60 focus:outline-none focus:border-[#dfb76c] focus:ring-1 focus:ring-[#dfb76c]/30 font-serif transition-colors disabled:opacity-50"
                       />
                       <button
                         type="button"
                         disabled={isVerifyingRoom}
                         onClick={() => handleEnterRoom(customPublicRoom || 'main-study-hall', undefined, false, 'custom')}
-                        className="py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-all border border-white/15 cursor-pointer shrink-0 flex items-center gap-1.5"
+                        className="py-2.5 px-4 rounded-xl bg-[#251e18] hover:bg-[#32271f] disabled:opacity-50 disabled:cursor-not-allowed text-[#dfb76c] text-xs font-serif font-semibold transition-all border border-[#c5a059]/35 cursor-pointer shrink-0 flex items-center gap-1.5"
                       >
                         {isVerifyingRoom && verifyingAction === 'custom' && (
                           <Loader2 size={13} className="animate-spin" />
@@ -1013,34 +1005,34 @@ export default function App() {
 
               {/* Tab 2: Private Room with PIN */}
               {selectedRoomTab === 'private' && (
-                <div className="space-y-4">
-                  {/* Submode Switcher: Create vs Join */}
-                  <div className="flex items-center gap-2 border-b border-white/10 pb-3">
+                <div className="space-y-4 font-serif">
+                  {/* Submode Switcher: Create vs Join (Classical Serif tabs) */}
+                  <div className="flex items-center gap-3 border-b border-[#c5a059]/25 pb-3">
                     <button
                       type="button"
                       onClick={() => {
                         setPrivateMode('create');
                         setRoomModalError(null);
                       }}
-                      className={`text-xs font-bold uppercase tracking-wider pb-1 transition-all cursor-pointer ${
+                      className={`text-xs font-serif font-bold uppercase tracking-wider pb-1 transition-all cursor-pointer ${
                         privateMode === 'create'
-                          ? 'text-purple-300 border-b-2 border-purple-400'
-                          : 'text-white/40 hover:text-white'
+                          ? 'text-[#dfb76c] border-b-2 border-[#c5a059]'
+                          : 'text-[#8a8071] hover:text-[#f5f0e6]'
                       }`}
                     >
                       {language === 'vi' ? '+ Tạo phòng riêng mới (Chủ phòng)' : '+ Create Private Room (Host)'}
                     </button>
-                    <span className="text-white/20">•</span>
+                    <span className="text-[#c5a059]/40">•</span>
                     <button
                       type="button"
                       onClick={() => {
                         setPrivateMode('join');
                         setRoomModalError(null);
                       }}
-                      className={`text-xs font-bold uppercase tracking-wider pb-1 transition-all cursor-pointer ${
+                      className={`text-xs font-serif font-bold uppercase tracking-wider pb-1 transition-all cursor-pointer ${
                         privateMode === 'join'
-                          ? 'text-purple-300 border-b-2 border-purple-400'
-                          : 'text-white/40 hover:text-white'
+                          ? 'text-[#dfb76c] border-b-2 border-[#c5a059]'
+                          : 'text-[#8a8071] hover:text-[#f5f0e6]'
                       }`}
                     >
                       {language === 'vi' ? 'Tham gia phòng bạn bè' : 'Join Friend\'s Room'}
@@ -1050,14 +1042,14 @@ export default function App() {
                   {privateMode === 'create' ? (
                     /* Create New Private Room */
                     <div className="space-y-3.5">
-                      <p className="text-xs text-white/60">
+                      <p className="text-xs text-[#c4b9a9] font-serif leading-relaxed">
                         {language === 'vi'
                           ? 'Bạn sẽ là chủ phòng. Hãy đặt tên phòng và mã PIN để bạn bè nhập đúng mã mới vào được.'
                           : 'You will be the host. Set a room name and PIN code that friends must enter to join.'}
                       </p>
 
                       <div>
-                        <label className="text-[11px] font-bold text-white/60 uppercase tracking-wider block mb-1.5">
+                        <label className="text-[11px] font-serif font-bold text-[#c5a059] uppercase tracking-wider block mb-1.5">
                           {language === 'vi' ? 'Tên phòng học' : 'Room Name'}
                         </label>
                         <input
@@ -1066,13 +1058,13 @@ export default function App() {
                           disabled={isVerifyingRoom}
                           onChange={(e) => setCreateRoomName(e.target.value)}
                           placeholder={language === 'vi' ? 'VD: nhom-hoc-247, do-an-tot-nghiep...' : 'e.g. project-x, final-prep...'}
-                          className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-2.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-purple-400 transition-colors disabled:opacity-50"
+                          className="w-full bg-[#100d0b] border border-[#c5a059]/30 rounded-xl px-4 py-2.5 text-xs text-[#f5f0e6] placeholder-[#8a8071]/60 focus:outline-none focus:border-[#dfb76c] focus:ring-1 focus:ring-[#dfb76c]/30 font-serif transition-colors disabled:opacity-50"
                         />
                       </div>
 
                       <div>
-                        <label className="text-[11px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-                          <KeyRound size={13} />
+                        <label className="text-[11px] font-serif font-bold text-[#dfb76c] uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                          <KeyRound size={13} className="text-[#dfb76c]" />
                           <span>{language === 'vi' ? 'Đặt mã PIN phòng (Bắt buộc)' : 'Set Room PIN (Required)'}</span>
                         </label>
                         <input
@@ -1081,7 +1073,7 @@ export default function App() {
                           disabled={isVerifyingRoom}
                           onChange={(e) => setCreateRoomPin(e.target.value)}
                           placeholder={language === 'vi' ? 'Nhập mã PIN (VD: 1234, study99)...' : 'Enter PIN code (e.g. 1234, deepwork)...'}
-                          className="w-full bg-black/50 border border-purple-500/40 rounded-xl px-4 py-2.5 text-xs text-white font-mono placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400 transition-colors disabled:opacity-50"
+                          className="w-full bg-[#100d0b] border border-[#c5a059]/45 rounded-xl px-4 py-2.5 text-xs text-[#f5f0e6] font-mono placeholder-[#8a8071]/60 focus:outline-none focus:border-[#dfb76c] focus:ring-1 focus:ring-[#dfb76c]/40 transition-colors disabled:opacity-50"
                         />
                       </div>
 
@@ -1089,11 +1081,11 @@ export default function App() {
                         type="button"
                         disabled={isVerifyingRoom}
                         onClick={() => handleEnterRoom(createRoomName, createRoomPin, true, 'create')}
-                        className="mt-2 w-full py-3 rounded-xl bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-widest transition-all shadow-lg shadow-purple-500/25 flex items-center justify-center gap-2 cursor-pointer"
+                        className="mt-2 w-full py-3 rounded-xl bg-gradient-to-r from-[#b38a3e] via-[#dfb76c] to-[#b38a3e] hover:from-[#c59a4a] hover:via-[#ebd08c] hover:to-[#c59a4a] disabled:opacity-50 disabled:cursor-not-allowed text-[#140f0a] text-xs font-serif font-bold uppercase tracking-widest transition-all shadow-[0_4px_20px_rgba(197,160,89,0.3)] flex items-center justify-center gap-2 cursor-pointer border border-[#f5dfa3]/40"
                       >
                         {isVerifyingRoom && verifyingAction === 'create' ? (
                           <>
-                            <Loader2 size={15} className="animate-spin" />
+                            <Loader2 size={15} className="animate-spin text-[#140f0a]" />
                             <span>{language === 'vi' ? 'Đang lưu phòng vào Firebase...' : 'Saving Room to Firebase...'}</span>
                           </>
                         ) : (
@@ -1107,14 +1099,14 @@ export default function App() {
                   ) : (
                     /* Join Existing Private Room */
                     <div className="space-y-3.5">
-                      <p className="text-xs text-white/60">
+                      <p className="text-xs text-[#c4b9a9] font-serif leading-relaxed">
                         {language === 'vi'
                           ? 'Nhập tên phòng và mã PIN do chủ phòng đã chia sẻ cho bạn để vào học.'
                           : 'Enter the room name and PIN code shared by the host to join.'}
                       </p>
 
                       <div>
-                        <label className="text-[11px] font-bold text-white/60 uppercase tracking-wider block mb-1.5">
+                        <label className="text-[11px] font-serif font-bold text-[#c5a059] uppercase tracking-wider block mb-1.5">
                           {language === 'vi' ? 'Tên / Mã phòng' : 'Room ID'}
                         </label>
                         <input
@@ -1123,13 +1115,13 @@ export default function App() {
                           disabled={isVerifyingRoom}
                           onChange={(e) => setJoinRoomName(e.target.value)}
                           placeholder={language === 'vi' ? 'VD: nhom-hoc-247...' : 'e.g. project-x...'}
-                          className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-2.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-purple-400 transition-colors disabled:opacity-50"
+                          className="w-full bg-[#100d0b] border border-[#c5a059]/30 rounded-xl px-4 py-2.5 text-xs text-[#f5f0e6] placeholder-[#8a8071]/60 focus:outline-none focus:border-[#dfb76c] focus:ring-1 focus:ring-[#dfb76c]/30 font-serif transition-colors disabled:opacity-50"
                         />
                       </div>
 
                       <div>
-                        <label className="text-[11px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-                          <KeyRound size={13} />
+                        <label className="text-[11px] font-serif font-bold text-[#dfb76c] uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                          <KeyRound size={13} className="text-[#dfb76c]" />
                           <span>{language === 'vi' ? 'Mã PIN bảo mật' : 'Room PIN Code'}</span>
                         </label>
                         <input
@@ -1141,7 +1133,7 @@ export default function App() {
                             if (e.key === 'Enter' && !isVerifyingRoom) handleEnterRoom(joinRoomName, joinRoomPin, false, 'join');
                           }}
                           placeholder={language === 'vi' ? 'Nhập mã PIN của phòng...' : 'Enter room PIN...'}
-                          className="w-full bg-black/50 border border-purple-500/40 rounded-xl px-4 py-2.5 text-xs text-white font-mono placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400 transition-colors disabled:opacity-50"
+                          className="w-full bg-[#100d0b] border border-[#c5a059]/45 rounded-xl px-4 py-2.5 text-xs text-[#f5f0e6] font-mono placeholder-[#8a8071]/60 focus:outline-none focus:border-[#dfb76c] focus:ring-1 focus:ring-[#dfb76c]/40 transition-colors disabled:opacity-50"
                         />
                       </div>
 
@@ -1149,11 +1141,11 @@ export default function App() {
                         type="button"
                         disabled={isVerifyingRoom}
                         onClick={() => handleEnterRoom(joinRoomName, joinRoomPin, false, 'join')}
-                        className="mt-2 w-full py-3 rounded-xl bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-widest transition-all shadow-lg shadow-purple-500/25 flex items-center justify-center gap-2 cursor-pointer"
+                        className="mt-2 w-full py-3 rounded-xl bg-gradient-to-r from-[#b38a3e] via-[#dfb76c] to-[#b38a3e] hover:from-[#c59a4a] hover:via-[#ebd08c] hover:to-[#c59a4a] disabled:opacity-50 disabled:cursor-not-allowed text-[#140f0a] text-xs font-serif font-bold uppercase tracking-widest transition-all shadow-[0_4px_20px_rgba(197,160,89,0.3)] flex items-center justify-center gap-2 cursor-pointer border border-[#f5dfa3]/40"
                       >
                         {isVerifyingRoom && verifyingAction === 'join' ? (
                           <>
-                            <Loader2 size={15} className="animate-spin" />
+                            <Loader2 size={15} className="animate-spin text-[#140f0a]" />
                             <span>{language === 'vi' ? 'Đang xác thực PIN với Firebase...' : 'Verifying PIN with Firebase...'}</span>
                           </>
                         ) : (

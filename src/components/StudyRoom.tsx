@@ -4,10 +4,20 @@ import io from "socket.io-client";
 import { PeerConnectionManager, createBlankVideoTrack } from "../lib/PeerConnectionManager";
 import { Camera, CameraOff, Mic, MicOff, PhoneOff, Users, Maximize2, Music, Volume2, VolumeX, CloudRain, TreePine, Coffee, Wind, Upload, User, Image as ImageIcon, MessageCircle, Send, X, Monitor, MonitorOff, Timer, Play, Pause, RotateCcw, Edit3, Sparkles, CheckCircle2, Circle, Trash2, ListTodo, FileText, NotebookPen, Lock, Unlock, Info, Award, Sun, CloudSnow, Wand2, Shield, Share2, KeyRound, Copy, Check, Globe, Eye, EyeOff } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { collection, addDoc, serverTimestamp, query, where, getDocs, doc, setDoc } from "firebase/firestore";
-import { db, auth } from "../lib/firebase";
+import { collection, addDoc, serverTimestamp, query, where, getDocs, doc, setDoc, deleteDoc, orderBy, onSnapshot, limit } from "firebase/firestore";
+import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
 import Whiteboard from "./Whiteboard";
 import { WeatherWidget } from "./WeatherWidget";
+
+interface FirestoreParticipant {
+  id: string;
+  participantId: string;
+  userId?: string | null;
+  userName: string;
+  userProfilePic?: string;
+  joinedAt?: any;
+  lastSeen?: any;
+}
 
 interface PeerState {
   peerId: string;
@@ -39,7 +49,14 @@ interface Message {
   timestamp: number;
 }
 
-interface ChatMessage { id: string; senderId: string; senderName: string; text: string; timestamp: number; }
+interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderProfilePic?: string;
+  text: string;
+  timestamp: number;
+}
 interface StudyRoomProps {
   roomId: string;
   initialPin?: string;
@@ -67,6 +84,11 @@ const Video = ({ stream, profilePic, muted = false, className = "w-full h-full o
             console.warn("Video play failed:", e);
             if (e.name === 'NotAllowedError') {
               setPlayError(true);
+              // Autoplay policy blocked sound; play muted first so video frame renders immediately
+              if (ref.current && !muted) {
+                ref.current.muted = true;
+                ref.current.play().catch(() => {});
+              }
             }
           });
         }
@@ -75,6 +97,7 @@ const Video = ({ stream, profilePic, muted = false, className = "w-full h-full o
       play();
       stream.getVideoTracks().forEach(t => {
         t.onunmute = play;
+        t.onended = play;
       });
       stream.onaddtrack = play;
     }
@@ -109,15 +132,295 @@ const Video = ({ stream, profilePic, muted = false, className = "w-full h-full o
         <button 
           onClick={() => {
             if (ref.current) {
+              ref.current.muted = false;
               ref.current.play().then(() => setPlayError(false)).catch(e => console.error(e));
             }
           }}
-          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 text-white backdrop-blur-md pointer-events-auto rounded-xl"
+          className="absolute bottom-3 left-3 z-30 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/80 text-[#dfb76c] border border-[#c5a059]/40 backdrop-blur-md cursor-pointer hover:bg-black transition-all"
         >
-          <Volume2 size={32} className="mb-2" />
-          <span className="text-[10px] font-bold tracking-wider text-center px-4 uppercase">Chạm để phát âm thanh</span>
+          <Volume2 size={14} />
+          <span className="text-[10px] font-serif font-bold tracking-wider uppercase">Bật tiếng</span>
         </button>
       )}
+    </div>
+  );
+};
+
+const MaximizedVideoElement = ({ 
+  stream, 
+  muted, 
+  isScreenSharing, 
+  language 
+}: { 
+  stream: MediaStream; 
+  muted: boolean; 
+  isScreenSharing: boolean; 
+  language: 'en' | 'vi';
+}) => {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [playError, setPlayError] = useState(false);
+  const [isAudioMuted, setIsAudioMuted] = useState(muted);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>(isScreenSharing ? 'contain' : 'contain');
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Sync muted changes
+  useEffect(() => {
+    setIsAudioMuted(muted);
+    if (ref.current) {
+      ref.current.muted = muted;
+    }
+  }, [muted]);
+
+  useEffect(() => {
+    const videoEl = ref.current;
+    if (!videoEl || !stream) {
+      console.warn("[MaximizedVideoElement] Missing videoEl or stream on mount/update", {
+        hasVideoEl: !!videoEl,
+        hasStream: !!stream
+      });
+      return;
+    }
+
+    const videoTracks = stream.getVideoTracks();
+    const audioTracks = stream.getAudioTracks();
+
+    console.log("[MaximizedVideoElement:Mount] Assigning MediaStream to <video> srcObject:", {
+      streamId: stream.id,
+      active: stream.active,
+      mutedProp: muted,
+      isAudioMuted,
+      videoTracks: videoTracks.map(t => ({
+        id: t.id,
+        label: t.label,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState
+      })),
+      audioTracks: audioTracks.map(t => ({
+        id: t.id,
+        label: t.label,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState
+      }))
+    });
+
+    // Directly assign srcObject
+    videoEl.srcObject = stream;
+    videoEl.muted = isAudioMuted;
+
+    console.log("[MaximizedVideoElement:Verification] videoEl.srcObject assigned successfully?", {
+      isEqual: videoEl.srcObject === stream,
+      assignedStreamId: (videoEl.srcObject as MediaStream)?.id,
+      currentSrc: videoEl.currentSrc,
+      readyState: videoEl.readyState,
+      videoWidth: videoEl.videoWidth,
+      videoHeight: videoEl.videoHeight
+    });
+
+    // Check if video frames or metadata are already available immediately
+    if (videoEl.videoWidth > 0 || videoEl.readyState >= 1) {
+      console.log(`[MaximizedVideoElement:QuickReady] Video already has dimensions: ${videoEl.videoWidth}x${videoEl.videoHeight}, readyState: ${videoEl.readyState}`);
+      setIsLoading(false);
+    }
+
+    const tryPlay = async () => {
+      if (!ref.current) return;
+      try {
+        console.log("[MaximizedVideoElement:Play] Calling videoEl.play()...");
+        await ref.current.play();
+        console.log("[MaximizedVideoElement:Play] videoEl.play() SUCCESS! Dimensions:", `${ref.current.videoWidth}x${ref.current.videoHeight}`, `paused: ${ref.current.paused}`);
+        setPlayError(false);
+        setIsLoading(false);
+      } catch (err: any) {
+        console.warn("[MaximizedVideoElement:Play] videoEl.play() rejected:", err);
+        if (err.name === 'NotAllowedError' && !ref.current.muted) {
+          console.log("[MaximizedVideoElement:Play] Autoplay blocked unmuted audio; playing muted fallback so video renders immediately...");
+          ref.current.muted = true;
+          setIsAudioMuted(true);
+          setPlayError(true);
+          try {
+            await ref.current.play();
+            console.log("[MaximizedVideoElement:Play] Muted fallback play SUCCESS!");
+            setIsLoading(false);
+          } catch (e) {
+            console.warn("[MaximizedVideoElement:Play] Muted fallback play failed:", e);
+          }
+        }
+      }
+    };
+
+    tryPlay();
+
+    const handleLoadedMetadata = () => {
+      console.log(`[MaximizedVideoElement:Event] 'loadedmetadata' event fired! Dimensions: ${videoEl.videoWidth}x${videoEl.videoHeight}, readyState: ${videoEl.readyState}`);
+      setIsLoading(false);
+      tryPlay();
+    };
+
+    const handleLoadedData = () => {
+      console.log(`[MaximizedVideoElement:Event] 'loadeddata' event fired! readyState: ${videoEl.readyState}`);
+      setIsLoading(false);
+    };
+
+    const handlePlaying = () => {
+      console.log(`[MaximizedVideoElement:Event] 'playing' event fired! Dimensions: ${videoEl.videoWidth}x${videoEl.videoHeight}, paused: ${videoEl.paused}`);
+      setIsLoading(false);
+    };
+
+    const handleTrackActivity = (e?: Event) => {
+      console.log(`[MaximizedVideoElement:TrackEvent] Track activity event (${e?.type || 'trigger'}), re-verifying srcObject...`, {
+        streamId: stream.id,
+        currentSrcObject: (videoEl.srcObject as MediaStream)?.id
+      });
+      if (videoEl && videoEl.srcObject !== stream) {
+        console.log("[MaximizedVideoElement:TrackEvent] Re-assigning srcObject to stream");
+        videoEl.srcObject = stream;
+      }
+      tryPlay();
+    };
+
+    videoEl.addEventListener('loadedmetadata', handleLoadedMetadata);
+    videoEl.addEventListener('loadeddata', handleLoadedData);
+    videoEl.addEventListener('playing', handlePlaying);
+
+    stream.getVideoTracks().forEach(t => {
+      t.onunmute = (e) => {
+        console.log(`[MaximizedVideoElement:Track] Video track '${t.id}' UNMUTED`, e);
+        handleTrackActivity(e);
+      };
+      t.onmute = (e) => console.log(`[MaximizedVideoElement:Track] Video track '${t.id}' MUTED`, e);
+      t.onended = (e) => console.log(`[MaximizedVideoElement:Track] Video track '${t.id}' ENDED`, e);
+    });
+
+    stream.getAudioTracks().forEach(t => {
+      t.onunmute = (e) => {
+        console.log(`[MaximizedVideoElement:Track] Audio track '${t.id}' UNMUTED`, e);
+        handleTrackActivity(e);
+      };
+      t.onmute = (e) => console.log(`[MaximizedVideoElement:Track] Audio track '${t.id}' MUTED`, e);
+    });
+
+    stream.onaddtrack = (e) => {
+      console.log("[MaximizedVideoElement:Stream] Stream onaddtrack:", e.track.kind, e.track.id);
+      handleTrackActivity(e);
+    };
+    stream.onremovetrack = (e) => {
+      console.log("[MaximizedVideoElement:Stream] Stream onremovetrack:", e.track.kind, e.track.id);
+      handleTrackActivity(e);
+    };
+
+    return () => {
+      videoEl.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      videoEl.removeEventListener('loadeddata', handleLoadedData);
+      videoEl.removeEventListener('playing', handlePlaying);
+      stream.getVideoTracks().forEach(t => {
+        t.onunmute = null;
+        t.onmute = null;
+        t.onended = null;
+      });
+      stream.getAudioTracks().forEach(t => {
+        t.onunmute = null;
+        t.onmute = null;
+      });
+      stream.onaddtrack = null;
+      stream.onremovetrack = null;
+    };
+  }, [stream]);
+
+  const toggleSound = () => {
+    if (!ref.current) return;
+    const nextMuted = !isAudioMuted;
+    ref.current.muted = nextMuted;
+    setIsAudioMuted(nextMuted);
+    console.log(`[MaximizedVideoElement:SoundToggle] Toggled sound. New isAudioMuted: ${nextMuted}`);
+    if (!nextMuted) {
+      ref.current.play().then(() => setPlayError(false)).catch(console.error);
+    }
+  };
+
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center relative select-none">
+      <div className="relative z-10 w-full h-full flex items-center justify-center overflow-hidden">
+        <video
+          ref={ref}
+          autoPlay
+          playsInline
+          muted={isAudioMuted}
+          className={`relative z-10 block w-full h-full max-h-[calc(100vh-210px)] rounded-2xl shadow-2xl transition-all duration-300 ${
+            fitMode === 'contain' ? 'object-contain' : 'object-cover'
+          }`}
+          style={{
+            backgroundColor: 'transparent'
+          }}
+        />
+
+        {/* Loading overlay - pointer-events-none and z-20 so it never obscures the video */}
+        {isLoading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0a08]/70 backdrop-blur-sm rounded-2xl pointer-events-none z-20 transition-opacity duration-300">
+            <div className="w-10 h-10 border-2 border-[#c5a059] border-t-transparent rounded-full animate-spin mb-3" />
+            <span className="text-xs font-serif text-[#dfb76c] uppercase tracking-widest">
+              {language === 'vi' ? 'Đang kết nối tín hiệu video...' : 'Connecting video stream...'}
+            </span>
+          </div>
+        )}
+
+        {/* Floating Quick Unmute Banner if audio was blocked by autoplay */}
+        {playError && isAudioMuted && !muted && (
+          <button
+            onClick={toggleSound}
+            className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-5 py-2.5 rounded-full bg-[#1e1712]/95 hover:bg-[#2b211a] border border-[#c5a059]/60 text-[#f5f0e6] shadow-[0_10px_30px_rgba(0,0,0,0.85)] backdrop-blur-md cursor-pointer transition-all hover:scale-105 active:scale-95"
+          >
+            <VolumeX size={18} className="text-[#dfb76c] animate-bounce" />
+            <span className="text-xs font-serif font-bold tracking-wider text-[#dfb76c]">
+              {language === 'vi' ? 'Âm thanh đang tắt • Chạm để bật tiếng' : 'Audio muted • Tap to unmute'}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* Classical Bottom Control Ribbon */}
+      <div className="mt-3 flex items-center justify-center gap-3 py-2 px-5 rounded-full bg-[#171310]/90 border border-[#c5a059]/35 backdrop-blur-md shadow-xl">
+        {/* Fit / Cover mode toggle */}
+        <button
+          onClick={() => setFitMode(prev => prev === 'contain' ? 'cover' : 'contain')}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-serif font-medium text-[#dfb76c] hover:bg-[#c5a059]/15 transition-all cursor-pointer"
+          title={fitMode === 'contain' ? (language === 'vi' ? 'Đổi sang lấp đầy khung hình' : 'Switch to fill') : (language === 'vi' ? 'Đổi sang vừa vặn khung hình' : 'Switch to fit')}
+        >
+          <Sparkles size={14} className="text-[#c5a059]" />
+          <span>
+            {fitMode === 'contain' 
+              ? (language === 'vi' ? 'Vừa vặn (Fit)' : 'Fit Mode') 
+              : (language === 'vi' ? 'Lấp đầy (Fill)' : 'Fill Mode')}
+          </span>
+        </button>
+
+        <div className="w-px h-4 bg-[#c5a059]/25" />
+
+        {/* Audio Mute/Unmute for remote */}
+        {!muted ? (
+          <button
+            onClick={toggleSound}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-serif font-medium transition-all cursor-pointer ${
+              isAudioMuted 
+                ? 'text-amber-300 hover:bg-amber-500/15' 
+                : 'text-emerald-400 hover:bg-emerald-500/15'
+            }`}
+          >
+            {isAudioMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            <span>
+              {isAudioMuted 
+                ? (language === 'vi' ? 'Bật tiếng' : 'Unmute') 
+                : (language === 'vi' ? 'Đang phát âm thanh' : 'Sound active')}
+            </span>
+          </button>
+        ) : (
+          <span className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-serif text-[#f5f0e6]/50">
+            <VolumeX size={15} />
+            <span>{language === 'vi' ? 'Micro của bạn (Tự tắt)' : 'Your microphone (Muted)'}</span>
+          </span>
+        )}
+      </div>
     </div>
   );
 };
@@ -194,6 +497,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   
   const [activeAmbience, setActiveAmbience] = useState('none');
   const [activeVisualTheme, setActiveVisualTheme] = useState('lofi');
@@ -242,8 +546,77 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
   const [isAmbienceMenuOpen, setIsAmbienceMenuOpen] = useState(false);
   const [profilePic, setProfilePic] = useState<string | undefined>(undefined);
   const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'goals' | 'notes' | 'participants' | null>(null);
-    const [completedSessionData, setCompletedSessionData] = useState<{ durationSeconds: number } | null>(null);
+  const [completedSessionData, setCompletedSessionData] = useState<{ durationSeconds: number } | null>(null);
   const [notifications, setNotifications] = useState<{ id: string, message: string, type: 'info' | 'success' }[]>([]);
+
+  // Real-time Firestore text chat synchronization for the room
+  // Entirely decoupled from WebRTC to ensure streaming audio/video is never disrupted
+  useEffect(() => {
+    if (!roomId) return;
+
+    const messagesPath = `rooms/${roomId}/messages`;
+    const messagesQuery = query(
+      collection(db, messagesPath),
+      orderBy('createdAt', 'asc'),
+      limit(200)
+    );
+
+    console.log(`[StudyRoom:FirestoreChat] Subscribing to messages in '${messagesPath}'`);
+
+    const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+      const loadedMessages: ChatMessage[] = snapshot.docs.map(d => {
+        const data = d.data();
+        let ts = Date.now();
+        if (data.createdAt?.toMillis) {
+          ts = data.createdAt.toMillis();
+        } else if (data.createdAt?.seconds) {
+          ts = data.createdAt.seconds * 1000;
+        }
+        return {
+          id: d.id,
+          senderId: data.senderId || 'anon',
+          senderName: data.senderName || (language === 'vi' ? 'Học viên' : 'Student'),
+          senderProfilePic: data.senderProfilePic,
+          text: data.text || '',
+          timestamp: ts
+        };
+      });
+
+      setMessages(loadedMessages);
+
+      if (activeSidebarTab !== 'chat') {
+        const addedChanges = snapshot.docChanges().filter(c => c.type === 'added');
+        if (addedChanges.length > 0 && !snapshot.metadata.hasPendingWrites) {
+          setUnreadChatCount(prev => prev + addedChanges.length);
+        }
+      }
+    }, (error) => {
+      console.warn("Firestore chat listener error:", error);
+      handleFirestoreError(error, OperationType.GET, messagesPath);
+    });
+
+    return () => {
+      console.log(`[StudyRoom:FirestoreChat] Unsubscribing from '${messagesPath}'`);
+      unsubscribe();
+    };
+  }, [roomId, activeSidebarTab, language]);
+
+  // Reset unread count when switching to chat tab
+  useEffect(() => {
+    if (activeSidebarTab === 'chat') {
+      setUnreadChatCount(0);
+      setTimeout(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 50);
+    }
+  }, [activeSidebarTab]);
+
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    if (activeSidebarTab === 'chat') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length, activeSidebarTab]);
 
   const addNotification = (message: string, type: 'info' | 'success' = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -321,6 +694,145 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
       socketRef.current.emit("update-user-name", { roomId, userName: trimmed });
     }
   };
+
+  const [firestoreParticipants, setFirestoreParticipants] = useState<FirestoreParticipant[]>([]);
+
+  // Stable session identifier for current participant presence document
+  const [myParticipantSessionId] = useState<string>(() => {
+    if (auth.currentUser?.uid) return auth.currentUser.uid;
+    const sessionKey = `study_participant_sid_${roomId}`;
+    let sid = sessionStorage.getItem(sessionKey);
+    if (!sid) {
+      sid = `guest_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
+      try { sessionStorage.setItem(sessionKey, sid); } catch (_) {}
+    }
+    return sid;
+  });
+
+  // Real-time Firestore presence announcer and heartbeat
+  useEffect(() => {
+    if (!roomId) return;
+    const participantDocRef = doc(db, 'rooms', roomId, 'participants', myParticipantSessionId);
+
+    const publishPresence = async () => {
+      try {
+        await setDoc(participantDocRef, {
+          participantId: myParticipantSessionId,
+          userId: auth.currentUser?.uid || null,
+          userName: myUserName,
+          ...(profilePic ? { userProfilePic: profilePic } : {}),
+          lastSeen: serverTimestamp()
+        }, { merge: true });
+        console.log(`[StudyRoom:FirestorePresence] Presence published for ${myUserName}`);
+      } catch (err) {
+        console.warn("[StudyRoom:FirestorePresence] Failed to publish presence:", err);
+      }
+    };
+
+    publishPresence();
+    const heartbeatTimer = setInterval(publishPresence, 25000);
+
+    const cleanupPresence = async () => {
+      try {
+        await deleteDoc(participantDocRef);
+      } catch (err) {
+        console.warn("[StudyRoom:FirestorePresence] Cleanup error:", err);
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      cleanupPresence();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      clearInterval(heartbeatTimer);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanupPresence();
+    };
+  }, [roomId, myParticipantSessionId, myUserName, profilePic]);
+
+  // Real-time Firestore listener for all active participants in the study room
+  useEffect(() => {
+    if (!roomId) return;
+    const participantsColRef = collection(db, 'rooms', roomId, 'participants');
+
+    console.log(`[StudyRoom:FirestorePresence] Subscribing to participants in 'rooms/${roomId}/participants'`);
+
+    const unsubscribe = onSnapshot(participantsColRef, (snapshot) => {
+      const now = Date.now();
+      const list: FirestoreParticipant[] = [];
+
+      snapshot.docs.forEach((docSnap) => {
+        const data = docSnap.data();
+        let lastSeenMs = now;
+        if (data.lastSeen?.toMillis) {
+          lastSeenMs = data.lastSeen.toMillis();
+        } else if (data.lastSeen?.seconds) {
+          lastSeenMs = data.lastSeen.seconds * 1000;
+        }
+
+        // Active if heartbeat updated within last 75 seconds or local pending write
+        if ((now - lastSeenMs < 75000) || docSnap.metadata.hasPendingWrites || docSnap.id === myParticipantSessionId) {
+          list.push({
+            id: docSnap.id,
+            participantId: data.participantId || docSnap.id,
+            userId: data.userId,
+            userName: data.userName || (language === 'vi' ? 'Học viên' : 'Student'),
+            userProfilePic: data.userProfilePic,
+            lastSeen: lastSeenMs
+          });
+        }
+      });
+
+      // Guarantee local user is always represented
+      const hasSelf = list.some(p => p.id === myParticipantSessionId || p.participantId === myParticipantSessionId);
+      if (!hasSelf) {
+        list.push({
+          id: myParticipantSessionId,
+          participantId: myParticipantSessionId,
+          userId: auth.currentUser?.uid,
+          userName: myUserName,
+          userProfilePic: profilePic,
+          lastSeen: now
+        });
+      }
+
+      setFirestoreParticipants(list);
+    }, (error) => {
+      console.warn("[StudyRoom:FirestorePresence] Listener error:", error);
+      handleFirestoreError(error, OperationType.GET, `rooms/${roomId}/participants`);
+    });
+
+    return () => {
+      console.log(`[StudyRoom:FirestorePresence] Unsubscribing from 'rooms/${roomId}/participants'`);
+      unsubscribe();
+    };
+  }, [roomId, myParticipantSessionId, myUserName, profilePic, language]);
+
+  const handleMaximizePeer = useCallback((targetId: string | 'local') => {
+    const isLocal = targetId === 'local';
+    const targetPeer = isLocal ? null : peers.find(p => p.peerId === targetId);
+    const targetStream = isLocal ? localDisplayStream : targetPeer?.stream;
+    console.log(`[StudyRoom:UserAction] User expanded stream for target '${targetId}':`, {
+      isLocal,
+      targetPeerName: isLocal ? myUserName : targetPeer?.userName,
+      targetIsCameraOff: isLocal ? isCameraOff : targetPeer?.isCameraOff,
+      targetIsScreenSharing: isLocal ? isScreenSharing : targetPeer?.isScreenSharing,
+      hasStream: !!targetStream,
+      streamId: targetStream?.id,
+      streamActive: targetStream?.active,
+      tracks: targetStream ? targetStream.getTracks().map(t => ({
+        kind: t.kind,
+        id: t.id,
+        label: t.label,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState
+      })) : []
+    });
+    setMaximizedPeerId(targetId);
+  }, [peers, localDisplayStream, myUserName, isCameraOff, isScreenSharing]);
 
   const userVideoRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<any>(null);
@@ -530,7 +1042,26 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
       peerManagerRef.current = manager;
 
       manager.onStream((peerId, remoteStream, remoteUserName) => {
-        console.log("Remote stream received for peer:", peerId, remoteUserName);
+        console.log(`[StudyRoom:RemoteStream] Remote stream received from peer '${peerId}' (${remoteUserName}):`, {
+          streamId: remoteStream.id,
+          active: remoteStream.active,
+          tracks: remoteStream.getTracks().map(t => ({
+            kind: t.kind,
+            id: t.id,
+            label: t.label,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState
+          }))
+        });
+
+        remoteStream.onaddtrack = (e) => {
+          console.log(`[StudyRoom:RemoteStreamTrack] Track added to stream ${remoteStream.id} from ${peerId}:`, e.track.kind, e.track.id, e.track.label);
+        };
+        remoteStream.onremovetrack = (e) => {
+          console.log(`[StudyRoom:RemoteStreamTrack] Track removed from stream ${remoteStream.id} from ${peerId}:`, e.track.kind, e.track.id);
+        };
+
         setPeers(prev => {
           const exists = prev.find(p => p.peerId === peerId);
           if (exists) {
@@ -706,14 +1237,8 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
       }));
     });
 
-    socketRef.current.on("receive-message", (payload: { message: string, senderId: string, senderName: string }) => {
-      setMessages(prev => [...prev, {
-        id: Math.random().toString(36).substring(7),
-        senderId: payload.senderId,
-        senderName: payload.senderName,
-        text: payload.message,
-        timestamp: Date.now()
-      }]);
+    socketRef.current.on("receive-message", () => {
+      // Ignored for UI state: persistent real-time chat is synchronized via Firestore onSnapshot
     });
 
     socketRef.current.on("receive-reaction", (payload: { reaction: string, targetPeerId: string, senderId: string }) => {
@@ -959,24 +1484,34 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
     }
   };
 
-  const sendMessage = (e: React.FormEvent) => {
-
+  const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
-    const senderName = myUserName;
-    socketRef.current.emit("send-message", {
-      roomId,
-      message: inputText,
-      senderName
-    });
-    setMessages(prev => [...prev, {
-      id: Math.random().toString(36).substring(7),
-      senderId: socketRef.current.id,
-      senderName,
-      text: inputText,
-      timestamp: Date.now()
-    }]);
+    const text = inputText.trim();
+    if (!text) return;
+
     setInputText("");
+    const currentUserId = auth.currentUser?.uid;
+    const currentPeerId = peerManagerRef.current?.getPeerId() || myPeerId;
+    const currentSocketId = socketRef.current?.id;
+    const senderId = currentUserId || currentPeerId || currentSocketId || 'anon';
+    const senderName = myUserName;
+    const senderProfilePic = profilePic || undefined;
+
+    // Send to Firestore in the background - strictly independent from WebRTC streams
+    const messagesPath = `rooms/${roomId}/messages`;
+    try {
+      await addDoc(collection(db, messagesPath), {
+        text,
+        senderId,
+        senderName,
+        ...(senderProfilePic ? { senderProfilePic } : {}),
+        createdAt: serverTimestamp()
+      });
+      console.log("[StudyRoom:FirestoreChat] Message successfully written to Firestore");
+    } catch (error) {
+      console.error("[StudyRoom:FirestoreChat] Error writing message to Firestore:", error);
+      handleFirestoreError(error, OperationType.CREATE, messagesPath);
+    }
   };
 
   const addGoal = (e: React.FormEvent) => {
@@ -1208,35 +1743,57 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
               <span>{isLocked ? (language === "vi" ? "Đã khóa" : "Locked") : (language === "vi" ? "Mở khóa" : "Open")}</span>
             </button>
           )}
+          {/* Real-time Firestore Participant Counter */}
           <div className="relative">
             <button 
               onClick={() => { triggerHaptic('light'); setActiveSidebarTab(activeSidebarTab === 'participants' ? null : 'participants'); }}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 text-xs font-medium transition-colors ${activeSidebarTab === 'participants' ? 'bg-white/20 text-white border border-white/40' : 'text-white/60 hover:bg-white/20 hover:text-white'}`}
+              className={`flex items-center gap-2.5 px-3.5 py-1.5 rounded-full border transition-all text-xs font-serif ${
+                activeSidebarTab === 'participants' 
+                  ? 'bg-[#c5a059]/25 text-[#f5ebd7] border-[#c5a059] shadow-md shadow-[#c5a059]/20' 
+                  : 'bg-[#18120c]/85 text-[#e6ded3] border-[#c5a059]/35 hover:bg-[#261d15] hover:border-[#d4af37]/60'
+              }`}
+              title={language === 'vi' ? 'Số học viên trực tuyến qua Firestore' : 'Live scholars in room via Firestore'}
             >
-              <div className="flex -space-x-2 mr-1">
-                <div className="w-6 h-6 rounded-full bg-blue-500/80 border border-black flex items-center justify-center text-white text-[10px] font-bold z-10 overflow-hidden" title={myUserName}>
-                  {profilePic ? (
-                    <img src={profilePic} alt={myUserName} className="w-full h-full object-cover" />
-                  ) : (
-                    myUserName.charAt(0).toUpperCase()
-                  )}
-                </div>
-                {peers.slice(0, 3).map((peer, i) => (
-                  <div key={peer.peerId} className="w-6 h-6 rounded-full bg-white/20 border border-black flex items-center justify-center text-white text-[10px] font-bold overflow-hidden" style={{ zIndex: 9 - i }} title={peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}>
-                    {peer.profilePic ? (
-                      <img src={peer.profilePic} alt={peer.userName} className="w-full h-full object-cover" />
+              {/* Live Pulsing Dot */}
+              <div className="relative flex items-center justify-center">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping absolute opacity-75" />
+                <span className="w-2 h-2 rounded-full bg-emerald-500 relative" />
+              </div>
+
+              {/* Firestore Real-Time Avatars Stack */}
+              <div className="flex -space-x-2 mr-0.5">
+                {firestoreParticipants.slice(0, 3).map((p, i) => (
+                  <div 
+                    key={p.id} 
+                    className="w-6 h-6 rounded-full ring-1 ring-[#c5a059]/60 border border-black flex items-center justify-center text-white text-[10px] font-bold overflow-hidden shadow-sm"
+                    style={{ zIndex: 10 - i }} 
+                    title={p.userName}
+                  >
+                    {p.userProfilePic ? (
+                      <img src={p.userProfilePic} alt={p.userName} className="w-full h-full object-cover" />
                     ) : (
-                      (peer.userName || "H").charAt(0).toUpperCase()
+                      <div className="w-full h-full bg-[#2a2016] text-[#c5a059] flex items-center justify-center font-serif text-[10px] font-bold">
+                        {(p.userName || "S").charAt(0).toUpperCase()}
+                      </div>
                     )}
                   </div>
                 ))}
-                {peers.length > 3 && (
-                  <div className="w-6 h-6 rounded-full bg-white/10 border border-black flex items-center justify-center text-white text-[8px] font-bold" style={{ zIndex: 0 }}>
-                    +{peers.length - 3}
+                {firestoreParticipants.length > 3 && (
+                  <div className="w-6 h-6 rounded-full bg-[#1b1510] border border-[#c5a059]/40 flex items-center justify-center text-[#d4af37] text-[8px] font-bold shadow-sm" style={{ zIndex: 0 }}>
+                    +{firestoreParticipants.length - 3}
                   </div>
                 )}
               </div>
-              <span>{peers.length + 1} {peers.length + 1 === 1 ? (language === "vi" ? "Người" : "Person") : t.participants}</span>
+
+              {/* Counter Text */}
+              <span className="font-semibold text-xs tracking-wide">
+                <span className="text-[#d4af37] font-bold mr-1">{firestoreParticipants.length}</span>
+                <span className="text-[#a69684]">
+                  {firestoreParticipants.length === 1 
+                    ? (language === "vi" ? "học viên" : "scholar") 
+                    : (language === "vi" ? "học viên" : "scholars")}
+                </span>
+              </span>
             </button>
           </div>
           <button 
@@ -1469,9 +2026,16 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
             }}
           >
             {/* User Video/Avatar */}
-            <motion.div layout className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === 'local' ? 'border-white ring-2 ring-white/50' : 'border-white/10 hover:border-white/30'}`}
+            <motion.div layout className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === 'local' ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
             >
-              {!localDisplayStream && profilePic ? (
+              {maximizedPeerId === 'local' ? (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
+                  <Eye size={22} className="animate-pulse text-[#c5a059]" />
+                  <span className="text-[11px] font-serif font-medium tracking-wide">
+                    {language === 'vi' ? 'Bạn đang xem ở màn hình chính' : 'You are in focus view'}
+                  </span>
+                </div>
+              ) : isCameraOff && profilePic ? (
                 <img src={profilePic} alt="Me" className="w-full h-full object-cover" />
               ) : !localDisplayStream ? (
                 <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 text-white/20">
@@ -1494,8 +2058,8 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
               {/* Maximize Button */}
               <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  onClick={() => setMaximizedPeerId('local')}
-                  className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10"
+                  onClick={() => handleMaximizePeer('local')}
+                  className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
                   title="Maximize"
                 >
                   <Maximize2 size={18} />
@@ -1522,147 +2086,258 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
             </motion.div>
 
             {/* Peer Videos/Avatars */}
-            {peers.map((peer) => (
-              <motion.div layout key={peer.peerId} className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === peer.peerId ? 'border-white ring-2 ring-white/50' : 'border-white/10 hover:border-white/30'}`}
-              >
-                {peer.stream && !peer.isCameraOff && !peer.isScreenSharing ? (
-                  <Video stream={peer.stream} className="max-w-full max-h-full object-cover rounded-xl shadow-2xl" />
-                ) : peer.stream && peer.isScreenSharing ? (
-                  <Video stream={peer.stream} className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/40 bg-zinc-900/90 relative">
-                    {peer.stream && <Video stream={peer.stream} hiddenVideo={true} className="absolute inset-0" />}
-                    {peer.profilePic ? (
-                      <img src={peer.profilePic} alt={peer.userName} className="w-14 h-14 rounded-full object-cover border border-white/20 shadow-lg" />
-                    ) : (
-                      <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white text-xl font-bold">
-                      {(peer.userName || "H").charAt(0).toUpperCase()}
+            {peers.map((peer) => {
+              const isCurrentlyMaximized = maximizedPeerId === peer.peerId;
+              const hasLiveVideoTrack = peer.stream
+                ? peer.stream.getVideoTracks().some(t => t.readyState === 'live' && t.enabled)
+                : false;
+
+              return (
+                <motion.div layout key={peer.peerId} className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === peer.peerId ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
+                >
+                  {isCurrentlyMaximized ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
+                      <Eye size={22} className="animate-pulse text-[#c5a059]" />
+                      <span className="text-[11px] font-serif font-medium tracking-wide">
+                        {language === 'vi' ? 'Đang phóng to trên màn hình chính' : 'In focus view'}
+                      </span>
                     </div>
-                    )}
-                    <span className="text-xs font-semibold text-white/80">{peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}</span>
-                    <span className="text-[10px] text-white/40 uppercase tracking-widest">
-                      {peer.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera off') : (language === 'vi' ? 'Sẵn sàng' : 'Ready')}
-                    </span>
+                  ) : peer.stream && !peer.isCameraOff && !peer.isScreenSharing && hasLiveVideoTrack ? (
+                    <Video stream={peer.stream} className="max-w-full max-h-full object-cover rounded-xl shadow-2xl" />
+                  ) : peer.stream && peer.isScreenSharing && hasLiveVideoTrack ? (
+                    <Video stream={peer.stream} className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/40 bg-zinc-900/90 relative">
+                      {peer.stream && <Video stream={peer.stream} hiddenVideo={true} className="absolute inset-0" />}
+                      {peer.profilePic ? (
+                        <img src={peer.profilePic} alt={peer.userName} className="w-14 h-14 rounded-full object-cover border border-white/20 shadow-lg" />
+                      ) : (
+                        <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white text-xl font-bold">
+                          {(peer.userName || "H").charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <span className="text-xs font-semibold text-white/80">{peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}</span>
+                      <span className="text-[10px] text-white/40 uppercase tracking-widest">
+                        {peer.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera off') : (language === 'vi' ? 'Sẵn sàng' : 'Ready')}
+                      </span>
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                    {peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}
                   </div>
-                )}
-                <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  {peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}
-                </div>
 
-                {/* Maximize Button for Peer */}
-                <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => setMaximizedPeerId(peer.peerId)}
-                    className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10"
-                    title="Maximize"
-                  >
-                    <Maximize2 size={18} />
-                  </button>
-                </div>
-
-                {/* Reactions for Peer */}
-                <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
-                  <AnimatePresence>
-                    {(reactions[peer.peerId] || []).map((r) => (
-                      <motion.div
-                        key={r.id}
-                        animate={{ 
-                          opacity: [0, 1, 1, 0],
-                        }}
-                        exit={{ opacity: 0 }}
-                        className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
-                      >
-                        {r.emoji}
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
-
-                {/* Quick Reaction Bar */}
-                <div className="absolute top-3 left-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {['👏', '🧠', '❤️', '🔥', '✨'].map(emoji => (
+                  {/* Maximize Button for Peer */}
+                  <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
-                      key={emoji}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        triggerHaptic('light');
-                        sendReaction(peer.peerId, emoji);
-                      }}
+                      onClick={() => handleMaximizePeer(peer.peerId)}
+                      className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
+                      title={language === 'vi' ? 'Phóng to' : 'Maximize'}
                     >
-                      {emoji}
+                      <Maximize2 size={18} />
                     </button>
-                  ))}
-                </div>
-              </motion.div>
-            ))}
+                  </div>
+
+                  {/* Reactions for Peer */}
+                  <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
+                    <AnimatePresence>
+                      {(reactions[peer.peerId] || []).map((r) => (
+                        <motion.div
+                          key={r.id}
+                          animate={{ 
+                            opacity: [0, 1, 1, 0],
+                          }}
+                          exit={{ opacity: 0 }}
+                          className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
+                        >
+                          {r.emoji}
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* Quick Reaction Bar */}
+                  <div className="absolute top-3 left-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {['👏', '🧠', '❤️', '🔥', '✨'].map(emoji => (
+                      <button
+                        key={emoji}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          triggerHaptic('light');
+                          sendReaction(peer.peerId, emoji);
+                        }}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              );
+            })}
           </motion.div>
 
-          {/* Maximized Peer / Screen Overlay */}
+          {/* Maximized Peer / Screen Overlay (High-Definition, No Black Screen) */}
           <AnimatePresence>
-            {maximizedPeerId && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="absolute inset-4 md:inset-8 z-40 bg-black/90 backdrop-blur-2xl rounded-3xl border border-white/20 overflow-hidden flex flex-col shadow-2xl"
-              >
-                <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/5">
-                  <div className="flex items-center gap-3">
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
-                    <span className="text-sm font-bold text-white tracking-wider">
-                      {maximizedPeerId === 'local' 
-                        ? `${myUserName} (${language === 'vi' ? 'Bạn' : 'You'})` 
-                        : (peers.find(p => p.peerId === maximizedPeerId)?.userName || (language === 'vi' ? 'Học viên' : 'Student'))}
-                    </span>
-                    {maximizedPeerId !== 'local' && peers.find(p => p.peerId === maximizedPeerId)?.isScreenSharing && (
-                      <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] font-bold uppercase tracking-wider">
-                        {language === 'vi' ? 'Đang chia sẻ màn hình' : 'Sharing Screen'}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => setMaximizedPeerId(null)}
-                    className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
-                    title="Close"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-                <div className="flex-1 w-full h-full flex items-center justify-center p-4 bg-zinc-950 relative overflow-hidden">
-                  {maximizedPeerId === 'local' ? (
-                    localDisplayStream ? (
-                      <Video stream={localDisplayStream} muted className="max-w-full max-h-full object-contain rounded-2xl" />
-                    ) : profilePic ? (
-                      <img src={profilePic} alt="Me" className="w-40 h-40 rounded-full object-cover border-2 border-white/30" />
-                    ) : (
-                      <User size={96} className="text-white/20" />
-                    )
-                  ) : (() => {
-                    const targetPeer = peers.find(p => p.peerId === maximizedPeerId);
-                    if (!targetPeer) return null;
-                    if (targetPeer.stream && (!targetPeer.isCameraOff || targetPeer.isScreenSharing)) {
-                      return <Video stream={targetPeer.stream} className="max-w-full max-h-full object-contain rounded-2xl shadow-2xl" />;
-                    }
-                    return (
-                      <div className="flex flex-col items-center justify-center gap-4 text-white/50">
-                        {targetPeer.profilePic ? (
-                          <img src={targetPeer.profilePic} alt={targetPeer.userName} className="w-40 h-40 rounded-full object-cover border-2 border-white/30 shadow-2xl" />
+            {maximizedPeerId && (() => {
+              const isLocal = maximizedPeerId === 'local';
+              const targetPeer = isLocal ? null : peers.find(p => p.peerId === maximizedPeerId);
+              const targetUserName = isLocal
+                ? `${myUserName} (${language === 'vi' ? 'Bạn' : 'You'})`
+                : (targetPeer?.userName || (language === 'vi' ? 'Học viên' : 'Student'));
+              const targetProfilePic = isLocal ? profilePic : targetPeer?.profilePic;
+              const targetIsScreenSharing = isLocal ? isScreenSharing : !!targetPeer?.isScreenSharing;
+              const targetIsCameraOff = isLocal ? isCameraOff : (targetPeer?.isCameraOff ?? true);
+              const targetStream = isLocal ? localDisplayStream : targetPeer?.stream;
+              const isMuted = isLocal;
+
+              const hasVideoTrack = targetStream
+                ? targetStream.getVideoTracks().length > 0
+                : false;
+              
+              const shouldRenderVideo = (targetIsScreenSharing || !targetIsCameraOff) && hasVideoTrack;
+
+              console.log(`[StudyRoom:OverlayRender] Rendering maximized overlay for '${maximizedPeerId}':`, {
+                shouldRenderVideo,
+                hasVideoTrack,
+                targetIsScreenSharing,
+                targetIsCameraOff,
+                hasTargetStream: !!targetStream,
+                streamId: targetStream?.id,
+                streamActive: targetStream?.active,
+                videoTrackCount: targetStream?.getVideoTracks().length,
+                audioTrackCount: targetStream?.getAudioTracks().length,
+                tracks: targetStream?.getTracks().map(t => ({ kind: t.kind, id: t.id, enabled: t.enabled, readyState: t.readyState }))
+              });
+
+              return (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  className="fixed inset-0 sm:inset-4 md:inset-6 z-[90] bg-[#120e0b]/98 backdrop-blur-3xl rounded-none sm:rounded-3xl border sm:border border-[#c5a059]/40 overflow-hidden flex flex-col shadow-[0_30px_100px_rgba(0,0,0,0.98)]"
+                >
+                  {/* Classical Top Bar */}
+                  <div className="p-3 sm:p-4 border-b border-[#c5a059]/30 flex items-center justify-between bg-gradient-to-r from-[#241c16] via-[#1a1410] to-[#241c16] shadow-sm select-none">
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        {targetProfilePic ? (
+                          <img src={targetProfilePic} alt={targetUserName} className="w-9 h-9 rounded-full object-cover border border-[#c5a059]/60 shadow-md" />
                         ) : (
-                          <div className="w-40 h-40 rounded-full bg-white/10 flex items-center justify-center text-white text-5xl font-bold border-2 border-white/20">
-                            {(targetPeer.userName || "H").charAt(0).toUpperCase()}
+                          <div className="w-9 h-9 rounded-full bg-[#2a2018] border border-[#c5a059]/50 flex items-center justify-center text-xs font-serif font-bold text-[#dfb76c]">
+                            {(targetUserName || "H").charAt(0).toUpperCase()}
                           </div>
                         )}
-                        <span className="text-xl font-bold text-white/80">{targetPeer.userName}</span>
-                        <span className="text-xs text-white/40 uppercase tracking-widest">
-                          {targetPeer.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera Off') : ''}
-                        </span>
+                        <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#1a1410] ${activeSpeakerId === maximizedPeerId ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`} />
                       </div>
-                    );
-                  })()}
-                </div>
-              </motion.div>
-            )}
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm sm:text-base font-serif font-bold text-[#f5f0e6] tracking-wide">
+                            {targetUserName}
+                          </span>
+                          {isLocal && (
+                            <span className="px-1.5 py-0.5 rounded bg-[#c5a059]/20 text-[#dfb76c] border border-[#c5a059]/40 text-[9px] font-serif uppercase tracking-wider">
+                              {language === 'vi' ? 'Bạn' : 'You'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {targetIsScreenSharing ? (
+                            <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-serif uppercase tracking-wider flex items-center gap-1">
+                              <Monitor size={11} />
+                              <span>{language === 'vi' ? 'Đang chia sẻ màn hình' : 'Sharing Screen'}</span>
+                            </span>
+                          ) : !targetIsCameraOff && hasVideoTrack ? (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-serif uppercase tracking-wider flex items-center gap-1">
+                              <Camera size={11} />
+                              <span>{language === 'vi' ? 'Camera trực tiếp' : 'Live Camera'}</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-[#2e2319] text-[#c5a059] border border-[#c5a059]/30 text-[10px] font-serif uppercase tracking-wider flex items-center gap-1">
+                              <User size={11} />
+                              <span>{language === 'vi' ? 'Hình đại diện học viên' : 'Scholar Profile'}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setMaximizedPeerId(null)}
+                      className="p-2 sm:p-2.5 rounded-full bg-white/5 hover:bg-[#c5a059]/25 text-[#dfb76c] hover:text-white transition-all cursor-pointer border border-[#c5a059]/35 shadow-md flex items-center gap-1.5 group"
+                      title={language === 'vi' ? 'Thu nhỏ (Esc)' : 'Close (Esc)'}
+                    >
+                      <X size={18} className="group-hover:rotate-90 transition-transform" />
+                      <span className="hidden sm:inline text-xs font-serif font-medium pr-1">{language === 'vi' ? 'Đóng' : 'Close'}</span>
+                    </button>
+                  </div>
+
+                  {/* Main Content Area */}
+                  <div className="flex-1 w-full h-full flex items-center justify-center p-2 sm:p-4 md:p-6 bg-[#0a0807] relative overflow-hidden">
+                    {shouldRenderVideo && targetStream ? (
+                      <div className="w-full h-full flex items-center justify-center relative">
+                        <MaximizedVideoElement
+                          stream={targetStream}
+                          muted={isMuted}
+                          isScreenSharing={targetIsScreenSharing}
+                          language={language}
+                        />
+                      </div>
+                    ) : (
+                      /* Avatar / Profile Picture / Student Card Mode */
+                      <div className="flex flex-col items-center justify-center gap-5 sm:gap-6 p-6 sm:p-10 text-center max-w-lg select-none">
+                        {targetProfilePic ? (
+                          <div className="relative group">
+                            <img
+                              src={targetProfilePic}
+                              alt={targetUserName}
+                              className="w-48 h-48 sm:w-64 sm:h-64 rounded-full object-cover border-4 border-[#c5a059] shadow-[0_0_60px_rgba(197,160,89,0.35)] ring-8 ring-[#c5a059]/15 transition-transform duration-500 group-hover:scale-105"
+                            />
+                            {activeSpeakerId === maximizedPeerId && (
+                              <span className="absolute inset-0 rounded-full border-4 border-[#dfb76c] animate-ping opacity-75 pointer-events-none" />
+                            )}
+                          </div>
+                        ) : (
+                          <div className="relative group">
+                            <div className="w-48 h-48 sm:w-64 sm:h-64 rounded-full bg-gradient-to-br from-[#2f251c] via-[#1c1611] to-[#120e0b] border-4 border-[#c5a059] flex items-center justify-center text-6xl sm:text-7xl font-serif font-bold text-[#dfb76c] shadow-[0_0_60px_rgba(197,160,89,0.3)] ring-8 ring-[#c5a059]/15 transition-transform duration-500 group-hover:scale-105">
+                              {(targetUserName || "H").charAt(0).toUpperCase()}
+                            </div>
+                            {activeSpeakerId === maximizedPeerId && (
+                              <span className="absolute inset-0 rounded-full border-4 border-[#dfb76c] animate-ping opacity-75 pointer-events-none" />
+                            )}
+                          </div>
+                        )}
+
+                        <div className="space-y-2">
+                          <h3 className="text-2xl sm:text-4xl font-serif font-bold text-[#f5f0e6] tracking-tight">
+                            {targetUserName}
+                          </h3>
+                          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#1e1712]/90 border border-[#c5a059]/35 text-xs uppercase tracking-widest text-[#dfb76c] font-serif shadow-inner">
+                            <Sparkles size={13} className="text-[#c5a059]" />
+                            <span>
+                              {targetIsCameraOff 
+                                ? (language === 'vi' ? 'Camera tạm tắt • Đang lắng nghe' : 'Camera Off • Listening') 
+                                : (language === 'vi' ? 'Hình đại diện học viên' : 'Student Avatar')}
+                            </span>
+                          </div>
+                        </div>
+
+                        {!isLocal && targetStream && (
+                          <audio
+                            ref={(el) => {
+                              if (el && el.srcObject !== targetStream) {
+                                el.srcObject = targetStream;
+                                el.play().catch(() => {});
+                              }
+                            }}
+                            autoPlay
+                            playsInline
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              );
+            })()}
           </AnimatePresence>
         </div>
 
@@ -1715,16 +2390,23 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                   <button
                     key={tab}
                     onClick={() => { triggerHaptic('light'); setActiveSidebarTab(tab); }}
-                      className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest transition-colors ${
-                        activeSidebarTab === tab ? "text-white border-b-2 border-white/80"
-                        : 'text-white/30 hover:text-white/60'
+                    className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest transition-all relative flex items-center justify-center gap-1.5 ${
+                      activeSidebarTab === tab ? "text-white border-b-2 border-white/80"
+                      : 'text-white/40 hover:text-white/70'
                     }`}
                   >
-                    {tab === 'chat' ? (language === "vi" ? "Chat" : "Chat") : 
-                     tab === 'goals' ? (language === "vi" ? "Tiêu" : "Goals") : 
-                     tab === 'notes' ? (language === "vi" ? "Ghi" : "Notes") : 
-                     tab === 'participants' ? (language === "vi" ? "Người" : "Users") : ""
-                     }
+                    <span>
+                      {tab === 'chat' ? (language === "vi" ? "Chat" : "Chat") : 
+                       tab === 'goals' ? (language === "vi" ? "Tiêu" : "Goals") : 
+                       tab === 'notes' ? (language === "vi" ? "Ghi" : "Notes") : 
+                       tab === 'participants' ? (language === "vi" ? "Người" : "Users") : ""
+                      }
+                    </span>
+                    {tab === 'chat' && unreadChatCount > 0 && activeSidebarTab !== 'chat' && (
+                      <span className="px-1.5 py-0.5 min-w-[18px] text-center bg-[#c5a059] text-black text-[9px] font-black rounded-full shadow-sm animate-pulse">
+                        {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -1733,13 +2415,18 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                 {activeSidebarTab === 'participants' && (
                   <div className="space-y-6 pt-6">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40">Active Now ({peers.length + 1})</h3>
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-[#d4af37]/80">
+                          {language === 'vi' ? 'Đang trực tuyến' : 'Active Now'} ({firestoreParticipants.length})
+                        </h3>
+                      </div>
                       <button 
-                        onClick={() => socketRef.current.emit("request-all-users", roomId)}
-                        className="text-[10px] text-white/40 hover:text-white transition-colors flex items-center gap-1"
+                        onClick={() => socketRef.current?.emit("request-all-users", roomId)}
+                        className="text-[10px] text-white/40 hover:text-white transition-colors flex items-center gap-1 cursor-pointer"
                       >
                         <RotateCcw size={10} />
-                        Refresh
+                        {language === 'vi' ? 'Làm mới' : 'Refresh'}
                       </button>
                     </div>
 
@@ -1846,50 +2533,116 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                   </div>
                 )}
                 {activeSidebarTab === 'chat' && (
-                  <div className="flex-1 flex flex-col h-full overflow-hidden">
-                    <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4 pt-4 pb-4">
-                      {messages.map((msg, idx) => {
-                        const isMe = msg.senderId === socketRef.current?.id;
-                        return (
-                          <motion.div 
-                            initial={{ opacity: 0, x: isMe ? 20 : -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            key={idx} 
-                            className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
-                          >
-                            {!isMe && (
-                                <span className="text-[10px] opacity-50 block mb-1 font-bold">
-                                  {msg.senderName}
-                                </span>
-                            )}
-                            <div className={`max-w-[90%] p-4 rounded-2xl text-[11px] leading-relaxed shadow-lg ${
-                              isMe 
-                                ? 'bg-white text-black rounded-br-none shadow-white/10' 
-                                : "bg-white/10 text-white rounded-bl-none"
-                            }`}>
-                              {msg.text}
-                            </div>
-                          </motion.div>
-                        );
-                      })}
+                  <div className="flex-1 flex flex-col h-full overflow-hidden pt-3">
+                    {/* Quiet discourse header note */}
+                    <div className="px-3 py-1.5 mb-2 bg-[#c5a059]/10 border border-[#c5a059]/20 rounded-xl flex items-center justify-between text-[10px] text-[#c5a059]/90 shrink-0">
+                      <span className="flex items-center gap-1.5 font-serif">
+                        <MessageCircle size={12} className="text-[#c5a059]" />
+                        {language === 'vi' ? 'Trao đổi phòng học' : 'Study Room Discourse'}
+                      </span>
+                      <span className="text-[9px] text-white/40 font-mono">
+                        {messages.length} {language === 'vi' ? 'tin nhắn' : 'msgs'}
+                      </span>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 px-1 pb-4">
+                      {messages.length === 0 ? (
+                        <div className="py-12 px-4 text-center border border-dashed border-[#c5a059]/20 rounded-2xl bg-[#1c1611]/30">
+                          <NotebookPen size={32} className="mx-auto mb-2 text-[#c5a059]/40" />
+                          <p className="text-xs font-serif font-medium text-[#e6ded3] mb-1">
+                            {language === 'vi' ? 'Chưa có lời nhắn nào' : 'No messages yet'}
+                          </p>
+                          <p className="text-[10px] text-[#a69684]/70 leading-relaxed max-w-[220px] mx-auto">
+                            {language === 'vi' 
+                              ? 'Trao đổi, thảo luận bài vở yên tĩnh mà không làm ngắt quãng video hay âm thanh.' 
+                              : 'Converse quietly with peers without interrupting streaming audio or video.'}
+                          </p>
+                        </div>
+                      ) : (
+                        messages.map((msg) => {
+                          const currentUserId = auth.currentUser?.uid;
+                          const currentPeerId = peerManagerRef.current?.getPeerId() || myPeerId;
+                          const currentSocketId = socketRef.current?.id;
+                          const isMe = (currentUserId && msg.senderId === currentUserId) ||
+                                       (currentPeerId && msg.senderId === currentPeerId) ||
+                                       (currentSocketId && msg.senderId === currentSocketId) ||
+                                       (msg.senderName === myUserName);
+                          
+                          const timeString = msg.timestamp 
+                            ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : '';
+
+                          return (
+                            <motion.div 
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              key={msg.id} 
+                              className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group`}
+                            >
+                              <div className={`flex items-end gap-2 max-w-[92%] ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                                {/* Avatar or Monogram */}
+                                {msg.senderProfilePic ? (
+                                  <img 
+                                    src={msg.senderProfilePic} 
+                                    alt={msg.senderName} 
+                                    className="w-7 h-7 rounded-full object-cover ring-1 ring-[#c5a059]/40 shrink-0 shadow-sm mb-1" 
+                                  />
+                                ) : (
+                                  <div className="w-7 h-7 rounded-full bg-[#261d15] text-[#c5a059] border border-[#c5a059]/40 flex items-center justify-center font-serif text-[11px] font-bold shrink-0 shadow-sm mb-1">
+                                    {(msg.senderName || 'S').charAt(0).toUpperCase()}
+                                  </div>
+                                )}
+
+                                <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                  {/* Sender name & time */}
+                                  <div className="flex items-center gap-1.5 mb-1 px-1">
+                                    {!isMe && (
+                                      <span className="text-[11px] font-serif font-medium text-[#d4af37]">
+                                        {msg.senderName}
+                                      </span>
+                                    )}
+                                    {timeString && (
+                                      <span className="text-[9px] text-[#8c7b6c] font-mono">
+                                        {timeString}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* Bubble */}
+                                  <div className={`p-3 rounded-2xl text-xs leading-relaxed break-words shadow-md transition-all ${
+                                    isMe 
+                                      ? 'bg-gradient-to-br from-[#c5a059] via-[#b88c3a] to-[#996515] text-[#161007] font-medium rounded-tr-xs border border-[#f3d489]/40 shadow-black/40' 
+                                      : 'bg-[#1f1812]/95 text-[#f5ebd7] rounded-tl-xs border border-[#4a3b2c] shadow-black/30'
+                                  }`}>
+                                    {msg.text}
+                                  </div>
+                                </div>
+                              </div>
+                            </motion.div>
+                          );
+                        })
+                      )}
                       <div ref={chatEndRef} />
                     </div>
-                    <form onSubmit={sendMessage} className="flex gap-2 shrink-0 pt-4 border-t border-white/10 bg-transparent">
+
+                    {/* Composer */}
+                    <form onSubmit={sendMessage} className="flex gap-2 shrink-0 pt-3 border-t border-[#c5a059]/20 bg-transparent">
                       <div className="flex-1 relative group">
                         <input 
                           type="text" 
                           value={inputText}
                           onChange={(e) => setInputText(e.target.value)}
                           placeholder={t.typeMessage}
-                          className="w-full bg-white/5 border border-white/10 rounded-full px-5 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/30 focus:bg-white/10 transition-all pr-12"
+                          className="w-full bg-[#18120d]/80 border border-[#c5a059]/30 rounded-xl px-4 py-2.5 text-xs text-[#f5ebd7] placeholder-[#8c7b6c]/60 focus:outline-none focus:border-[#d4af37] focus:bg-[#201812] transition-all"
                         />
                       </div>
                       <button 
                         type="submit" 
                         disabled={!inputText.trim()}
-                        className="w-12 h-12 rounded-full bg-white flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/80 transition-colors shrink-0"
+                        className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#c5a059] to-[#996515] text-[#161007] flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition-all shadow-md shrink-0"
+                        title={language === 'vi' ? 'Gửi tin nhắn' : 'Send message'}
                       >
-                        <Send size={16} />
+                        <Send size={15} />
                       </button>
                     </form>
                   </div>
@@ -1985,68 +2738,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
           )}
         </AnimatePresence>
 
-        {/* Maximized Video Overlay */}
-        <AnimatePresence>
-          {maximizedPeerId && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[100] bg-black flex flex-col p-4 md:p-8"
-            >
-              <div className="absolute top-6 right-6 z-[110]">
-                <button
-                  onClick={() => setMaximizedPeerId(null)}
-                  className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md flex items-center justify-center text-white hover:bg-white/20 transition-all"
-                >
-                  <X size={24} />
-                </button>
-              </div>
 
-              <div className="flex-1 relative flex items-center justify-center">
-                {maximizedPeerId === 'local' ? (
-                  !localDisplayStream && profilePic ? (
-                    <img src={profilePic} alt="Me" className="max-w-full max-h-full object-contain rounded-3xl shadow-2xl" />
-                  ) : !localDisplayStream ? (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 text-white/20 rounded-3xl shadow-2xl">
-                      <User size={120} />
-                    </div>
-                  ) : (
-                    <Video 
-                      stream={localDisplayStream} 
-                      muted 
-                      className="max-w-full max-h-full object-contain rounded-3xl shadow-2xl" 
-                    />
-                  )
-                ) : (
-                  (() => {
-                    const peer = peers.find(p => p.peerId === maximizedPeerId);
-                    if (!peer || (!peer.stream || (peer.isCameraOff && !peer.isScreenSharing))) return (
-                      <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-white/20 bg-zinc-900 rounded-3xl">
-                        {peer?.profilePic ? (
-                          <img src={peer.profilePic} alt={peer.userName} className="w-32 h-32 rounded-full object-cover border border-white/20 shadow-2xl" />
-                        ) : (
-                          <div className="w-32 h-32 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white text-5xl font-bold">
-                          {(peer?.userName || "H").charAt(0).toUpperCase()}
-                        </div>
-                        )}
-                        <p className="text-sm uppercase tracking-widest">{peer?.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera Off') : t.waiting}</p>
-                      </div>
-                    );
-                    return <Video stream={peer.stream} className={peer.isScreenSharing ? "max-w-full max-h-full object-contain rounded-3xl shadow-2xl" : "w-full h-full object-cover rounded-3xl shadow-2xl"} />;
-                  })()
-                )}
-                
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-3 rounded-full bg-black/60 backdrop-blur-md text-xs font-bold uppercase tracking-widest border border-white/10">
-                  {maximizedPeerId === 'local' 
-                    ? (auth.currentUser?.displayName || "You") 
-                    : (peers.find(p => p.peerId === maximizedPeerId)?.userName || "Student")
-                  }
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </main>
 
       {/* Controls */}
@@ -2149,11 +2841,17 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
 
         <button 
           onClick={() => { triggerHaptic('light'); setActiveSidebarTab(activeSidebarTab === 'chat' ? null : 'chat'); }}
-          className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all ${
-            activeSidebarTab === 'chat' ? 'bg-white text-black shadow-lg shadow-white/10 scale-110' : 'bg-white/10 hover:bg-white/20 text-white'
+          className={`relative w-12 h-12 md:w-14 md:h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all ${
+            activeSidebarTab === 'chat' ? 'bg-[#c5a059] text-[#161007] shadow-lg shadow-[#c5a059]/25 scale-110' : 'bg-white/10 hover:bg-white/20 text-white'
           }`}
+          title={t.chat}
         >
           <MessageCircle size={20} className="md:size-6" />
+          {unreadChatCount > 0 && activeSidebarTab !== 'chat' && (
+            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 bg-[#c5a059] text-[#161007] text-[10px] font-extrabold rounded-full flex items-center justify-center shadow-md border-2 border-[#16110c] animate-bounce">
+              {unreadChatCount > 99 ? '99+' : unreadChatCount}
+            </span>
+          )}
         </button>
 
         <button 

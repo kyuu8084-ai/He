@@ -161,7 +161,31 @@ export class PeerConnectionManager {
       call.answer(this.localStream);
 
       call.on('stream', (remoteStream) => {
-        console.log('[PeerJS] Remote stream received from:', call.peer, 'tracks:', remoteStream.getTracks().map(t => `${t.kind}:${t.enabled}`));
+        console.log('[PeerJS] Remote stream received from:', call.peer, {
+          streamId: remoteStream.id,
+          active: remoteStream.active,
+          tracks: remoteStream.getTracks().map(t => ({
+            kind: t.kind,
+            id: t.id,
+            label: t.label,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState
+          }))
+        });
+
+        remoteStream.onaddtrack = (e) => {
+          console.log(`[PeerJS:StreamEvent] Track added from peer ${call.peer}:`, e.track.kind, e.track.id, e.track.label);
+        };
+        remoteStream.onremovetrack = (e) => {
+          console.log(`[PeerJS:StreamEvent] Track removed from peer ${call.peer}:`, e.track.kind, e.track.id);
+        };
+        remoteStream.getTracks().forEach(t => {
+          t.onunmute = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) UNMUTED from ${call.peer}`);
+          t.onmute = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) MUTED from ${call.peer}`);
+          t.onended = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) ENDED from ${call.peer}`);
+        });
+
         const userName = call.metadata?.userName || 'Student';
         this.onStreamCallback?.(call.peer, remoteStream, userName);
       });
@@ -219,7 +243,31 @@ export class PeerConnectionManager {
     });
 
     call.on('stream', (remoteStream) => {
-      console.log('[PeerJS] Remote stream received on outgoing call to:', peerId);
+      console.log('[PeerJS] Remote stream received on outgoing call to:', peerId, {
+        streamId: remoteStream.id,
+        active: remoteStream.active,
+        tracks: remoteStream.getTracks().map(t => ({
+          kind: t.kind,
+          id: t.id,
+          label: t.label,
+          enabled: t.enabled,
+          muted: t.muted,
+          readyState: t.readyState
+        }))
+      });
+
+      remoteStream.onaddtrack = (e) => {
+        console.log(`[PeerJS:StreamEvent] Track added on call to ${peerId}:`, e.track.kind, e.track.id, e.track.label);
+      };
+      remoteStream.onremovetrack = (e) => {
+        console.log(`[PeerJS:StreamEvent] Track removed on call to ${peerId}:`, e.track.kind, e.track.id);
+      };
+      remoteStream.getTracks().forEach(t => {
+        t.onunmute = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) UNMUTED on call to ${peerId}`);
+        t.onmute = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) MUTED on call to ${peerId}`);
+        t.onended = () => console.log(`[PeerJS:TrackEvent] Track '${t.id}' (${t.kind}) ENDED on call to ${peerId}`);
+      });
+
       this.onStreamCallback?.(peerId, remoteStream, userName);
     });
 

@@ -83,6 +83,51 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["roomId", "isPrivate"]
+    },
+    "RoomMessage": {
+      "title": "Room Message",
+      "description": "Real-time chat message sent within a collaborative study room",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "maxLength": 2000 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 100 },
+        "senderProfilePic": { "type": "string", "maxLength": 50000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["text", "senderId", "senderName", "createdAt"]
+    },
+    "RoomParticipant": {
+      "title": "Room Participant",
+      "description": "Real-time presence state for a student actively participating in a study room",
+      "type": "object",
+      "properties": {
+        "participantId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 100 },
+        "userProfilePic": { "type": "string", "maxLength": 50000 },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["participantId", "userName", "lastSeen"]
+    },
+    "SessionRecording": {
+      "title": "Session Recording",
+      "description": "Metadata and link for a study session screen or audio recording",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "roomId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["screen", "audio"] },
+        "durationSeconds": { "type": "number" },
+        "fileSizeBytes": { "type": "number" },
+        "mimeType": { "type": "string", "maxLength": 100 },
+        "downloadUrl": { "type": "string", "maxLength": 500000 },
+        "recordedById": { "type": "string", "maxLength": 128 },
+        "recordedByName": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "roomId", "type", "recordedById", "recordedByName", "createdAt"]
     }
   },
   "firestore": {
@@ -109,6 +154,18 @@
     "rooms": {
       "schema": "StudyRoom",
       "description": "Study rooms metadata, security PINs, and privacy status"
+    },
+    "rooms/{roomId}/messages": {
+      "schema": "RoomMessage",
+      "description": "Real-time chat messages within a study room"
+    },
+    "rooms/{roomId}/participants": {
+      "schema": "RoomParticipant",
+      "description": "Real-time active participants currently inside a study room"
+    },
+    "rooms/{roomId}/recordings": {
+      "schema": "SessionRecording",
+      "description": "Recorded study session screen or audio metadata and links"
     }
   }
 }

@@ -50,6 +50,34 @@ service cloud.firestore {
              data.createdAt == request.time;
     }
 
+    function isValidRoomMessage(data) {
+      return data.keys().hasAll(['text', 'senderId', 'senderName', 'createdAt']) &&
+             data.keys().size() <= 6 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 2000 &&
+             data.senderId is string && data.senderId.size() <= 128 &&
+             data.senderName is string && data.senderName.size() <= 100 &&
+             data.createdAt == request.time;
+    }
+
+    function isValidRoomParticipant(data) {
+      return data.keys().hasAll(['participantId', 'userName', 'lastSeen']) &&
+             data.keys().size() <= 6 &&
+             data.participantId is string && data.participantId.size() <= 128 &&
+             data.userName is string && data.userName.size() <= 100 &&
+             data.lastSeen == request.time;
+    }
+
+    function isValidSessionRecording(data) {
+      return data.keys().hasAll(['title', 'roomId', 'type', 'recordedById', 'recordedByName', 'createdAt']) &&
+             data.keys().size() <= 10 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.roomId is string && data.roomId.size() <= 128 &&
+             (data.type == 'screen' || data.type == 'audio') &&
+             data.recordedById is string && data.recordedById.size() <= 128 &&
+             data.recordedByName is string && data.recordedByName.size() <= 100 &&
+             data.createdAt == request.time;
+    }
+
     // Collections
     match /forumCategories/{categoryId} {
       allow read: if true;
@@ -91,6 +119,27 @@ service cloud.firestore {
       allow read: if true;
       // Allow creating and updating room security and PIN configuration
       allow create, update: if true;
+
+      // Real-time chat messages
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidRoomMessage(incoming());
+        allow update, delete: if isOwner(existing().senderId);
+      }
+
+      // Real-time room participants
+      match /participants/{participantId} {
+        allow read: if true;
+        allow create, update: if isValidRoomParticipant(incoming());
+        allow delete: if true;
+      }
+
+      // Session recordings
+      match /recordings/{recordingId} {
+        allow read: if true;
+        allow create: if isValidSessionRecording(incoming());
+        allow update, delete: if isOwner(existing().recordedById) || !isSignedIn();
+      }
     }
   }
 }
