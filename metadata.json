@@ -1,0 +1,12 @@
+{
+  "name": "Remix Remix Remix Remix StudyWithMe",
+  "description": "A cinematic study environment for deep focus and collaborative learning.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

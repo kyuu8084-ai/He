@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet">
+    <title>Remix Remix Remix Remix StudyWithMe</title>
+    <meta name="description" content="A cinematic study environment for deep focus and collaborative learning." />
+    <meta property="og:title" content="Remix Remix Remix Remix StudyWithMe" />
+    <meta property="og:description" content="A cinematic study environment for deep focus and collaborative learning." />
+    <script>
+      try {
+        let originalFetch = window.fetch;
+        Object.defineProperty(window, 'fetch', {
+          get: () => originalFetch,
+          set: (v) => { console.warn('Ignored fetch override'); },
+          configurable: true,
+          enumerable: true
+        });
+      } catch(e) {}
+    </script>
+  </head>
+  <body style="font-family: 'Be Vietnam Pro', sans-serif; background-color: black; margin: 0;">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
