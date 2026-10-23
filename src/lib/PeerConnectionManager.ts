@@ -43,6 +43,62 @@ export function createBlankVideoTrack(width = 640, height = 360): MediaStreamTra
   throw new Error("captureStream not supported");
 }
 
+export type StreamQuality = 'high' | 'medium' | 'low';
+
+export interface QualityConstraints {
+  maxBitrate?: number; // bps
+  scaleResolutionDownBy?: number;
+  maxFramerate?: number;
+  label: { en: string; vi: string };
+  badge: string;
+  description: { en: string; vi: string };
+}
+
+export const QUALITY_CONFIGS: Record<StreamQuality, QualityConstraints> = {
+  high: {
+    maxBitrate: 1500000, // 1.5 Mbps
+    scaleResolutionDownBy: 1.0,
+    maxFramerate: 30,
+    label: { en: 'High', vi: 'Cao' },
+    badge: 'HD',
+    description: { en: '720p • 30fps (Best fidelity)', vi: '720p • 30fps (Độ nét cao)' }
+  },
+  medium: {
+    maxBitrate: 500000, // 500 kbps
+    scaleResolutionDownBy: 2.0, // 360p
+    maxFramerate: 20,
+    label: { en: 'Medium', vi: 'Trung bình' },
+    badge: 'SD',
+    description: { en: '360p • 20fps (Balanced performance)', vi: '360p • 20fps (Cân bằng & mượt)' }
+  },
+  low: {
+    maxBitrate: 150000, // 150 kbps
+    scaleResolutionDownBy: 3.5, // ~200p / 240p
+    maxFramerate: 12,
+    label: { en: 'Low', vi: 'Tiết kiệm' },
+    badge: 'ECO',
+    description: { en: '240p • 12fps (Anti-lag & Eco)', vi: '240p • 12fps (Chống lag, tiết kiệm)' }
+  }
+};
+
+export const CAMERA_QUALITY_CONSTRAINTS: Record<StreamQuality, MediaTrackConstraints> = {
+  high: {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30, max: 30 }
+  },
+  medium: {
+    width: { ideal: 640 },
+    height: { ideal: 360 },
+    frameRate: { ideal: 20, max: 20 }
+  },
+  low: {
+    width: { ideal: 320 },
+    height: { ideal: 240 },
+    frameRate: { ideal: 12, max: 15 }
+  }
+};
+
 export class PeerConnectionManager {
   private peer: Peer;
   private calls: Map<string, MediaConnection> = new Map();
@@ -51,9 +107,11 @@ export class PeerConnectionManager {
   private onUserLeftCallback?: (peerId: string) => void;
   private localStream: MediaStream;
   private userName: string;
+  private currentQuality: StreamQuality = 'medium';
 
-  constructor(roomId: string, userName: string, initialStream?: MediaStream) {
+  constructor(roomId: string, userName: string, initialStream?: MediaStream, initialQuality: StreamQuality = 'medium') {
     this.userName = userName;
+    this.currentQuality = initialQuality;
     this.localStream = this.ensureCompleteStream(initialStream);
 
     this.peer = new Peer(undefined as any, {
@@ -160,6 +218,16 @@ export class PeerConnectionManager {
       // Answer with our complete stream (audio + video transceivers)
       call.answer(this.localStream);
 
+      setTimeout(() => {
+        const pc = call.peerConnection;
+        if (pc) {
+          const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            this.applyQualityToSender(videoSender, this.currentQuality);
+          }
+        }
+      }, 500);
+
       call.on('stream', (remoteStream) => {
         console.log('[PeerJS] Remote stream received from:', call.peer, {
           streamId: remoteStream.id,
@@ -241,6 +309,16 @@ export class PeerConnectionManager {
     const call = this.peer.call(peerId, this.localStream, {
       metadata: { userName: this.userName }
     });
+
+    setTimeout(() => {
+      const pc = call.peerConnection;
+      if (pc) {
+        const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (videoSender) {
+          this.applyQualityToSender(videoSender, this.currentQuality);
+        }
+      }
+    }, 500);
 
     call.on('stream', (remoteStream) => {
       console.log('[PeerJS] Remote stream received on outgoing call to:', peerId, {
@@ -328,7 +406,9 @@ export class PeerConnectionManager {
 
       if (videoSender) {
         console.log('[PeerJS] Replacing video track for peer:', peerId);
-        videoSender.replaceTrack(newTrack).catch((err) => {
+        videoSender.replaceTrack(newTrack).then(() => {
+          this.applyQualityToSender(videoSender, this.currentQuality);
+        }).catch((err) => {
           console.warn('[PeerJS] sender.replaceTrack failed for peer:', peerId, err);
           this.reCall(peerId);
         });
@@ -337,6 +417,43 @@ export class PeerConnectionManager {
         this.reCall(peerId);
       }
     });
+  }
+
+  public async applyQualityToSender(sender: RTCRtpSender, quality: StreamQuality) {
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params) return;
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      const config = QUALITY_CONFIGS[quality];
+      params.encodings[0].maxBitrate = config.maxBitrate;
+      params.encodings[0].scaleResolutionDownBy = config.scaleResolutionDownBy;
+      params.encodings[0].maxFramerate = config.maxFramerate;
+      await sender.setParameters(params);
+      console.log(`[PeerJS:Quality] Successfully set '${quality}' constraints on video sender:`, config);
+    } catch (err) {
+      console.warn(`[PeerJS:Quality] sender.setParameters for '${quality}' failed:`, err);
+    }
+  }
+
+  public setStreamQuality(quality: StreamQuality) {
+    this.currentQuality = quality;
+    console.log(`[PeerJS:Quality] Updating stream quality to '${quality}' across ${this.calls.size} active calls`);
+    this.calls.forEach((call) => {
+      const pc = call.peerConnection;
+      if (!pc) return;
+      const senders = pc.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender) {
+        this.applyQualityToSender(videoSender, quality);
+      }
+    });
+  }
+
+  public getStreamQuality(): StreamQuality {
+    return this.currentQuality;
   }
 
   public replaceAudioTrack(newTrack: MediaStreamTrack) {

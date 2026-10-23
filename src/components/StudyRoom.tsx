@@ -1,8 +1,8 @@
 import { triggerHaptic } from '../lib/haptics';
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import io from "socket.io-client";
-import { PeerConnectionManager, createBlankVideoTrack } from "../lib/PeerConnectionManager";
-import { Camera, CameraOff, Mic, MicOff, PhoneOff, Users, Maximize2, Music, Volume2, VolumeX, CloudRain, TreePine, Coffee, Wind, Upload, User, Image as ImageIcon, MessageCircle, Send, X, Monitor, MonitorOff, Timer, Play, Pause, RotateCcw, Edit3, Sparkles, CheckCircle2, Circle, Trash2, ListTodo, FileText, NotebookPen, Lock, Unlock, Info, Award, Sun, CloudSnow, Wand2, Shield, Share2, KeyRound, Copy, Check, Globe, Eye, EyeOff } from "lucide-react";
+import { PeerConnectionManager, createBlankVideoTrack, StreamQuality, QUALITY_CONFIGS, CAMERA_QUALITY_CONSTRAINTS } from "../lib/PeerConnectionManager";
+import { Camera, CameraOff, Mic, MicOff, PhoneOff, Users, Maximize2, Music, Volume2, VolumeX, CloudRain, TreePine, Coffee, Wind, Upload, User, Image as ImageIcon, MessageCircle, Send, X, Monitor, MonitorOff, Timer, Play, Pause, RotateCcw, Edit3, Sparkles, CheckCircle2, Circle, Trash2, ListTodo, FileText, NotebookPen, Lock, Unlock, Info, Award, Sun, CloudSnow, Wand2, Shield, Share2, KeyRound, Copy, Check, Globe, Eye, EyeOff, CircleDot, Square, Download, Disc, FlipHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Cpu, SlidersHorizontal } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { collection, addDoc, serverTimestamp, query, where, getDocs, doc, setDoc, deleteDoc, orderBy, onSnapshot, limit } from "firebase/firestore";
 import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
@@ -17,6 +17,20 @@ interface FirestoreParticipant {
   userProfilePic?: string;
   joinedAt?: any;
   lastSeen?: any;
+}
+
+interface SessionRecordingItem {
+  id: string;
+  title: string;
+  roomId: string;
+  type: 'screen' | 'audio';
+  durationSeconds: number;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  downloadUrl?: string;
+  recordedById: string;
+  recordedByName: string;
+  createdAt?: any;
 }
 
 interface PeerState {
@@ -67,27 +81,57 @@ interface StudyRoomProps {
 }
 
 
-const Video = ({ stream, profilePic, muted = false, className = "w-full h-full object-cover rounded-2xl bg-black/20", hiddenVideo = false }: { stream?: MediaStream, profilePic?: string, muted?: boolean, className?: string, hiddenVideo?: boolean }) => {
-  const ref = useRef<HTMLVideoElement>(null);
+const HeadlessPeerAudio = ({ stream, muted = false }: { stream?: MediaStream, muted?: boolean }) => {
+  const ref = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && stream) {
+      el.srcObject = stream;
+      el.muted = muted;
+      el.play().catch(() => {});
+    }
+  }, [stream, muted]);
+
+  return <audio ref={ref} autoPlay playsInline muted={muted} className="hidden" />;
+};
+
+const Video = ({ 
+  stream, 
+  profilePic, 
+  muted = false, 
+  className = "w-full h-full object-cover rounded-2xl bg-black/20", 
+  hiddenVideo = false,
+  isMirrored = false
+}: { 
+  stream?: MediaStream, 
+  profilePic?: string, 
+  muted?: boolean, 
+  className?: string, 
+  hiddenVideo?: boolean,
+  isMirrored?: boolean
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [playError, setPlayError] = useState(false);
 
   useEffect(() => {
-    if (ref.current && stream) {
-      ref.current.srcObject = stream;
-      ref.current.muted = muted;
+    const mediaEl = hiddenVideo ? audioRef.current : videoRef.current;
+    if (mediaEl && stream) {
+      mediaEl.srcObject = stream;
+      mediaEl.muted = muted;
       
       const play = () => {
-        if (!ref.current) return;
-        const playPromise = ref.current.play();
+        if (!mediaEl) return;
+        const playPromise = mediaEl.play();
         if (playPromise !== undefined) {
           playPromise.then(() => setPlayError(false)).catch(e => {
-            console.warn("Video play failed:", e);
+            console.warn("Media play failed:", e);
             if (e.name === 'NotAllowedError') {
               setPlayError(true);
-              // Autoplay policy blocked sound; play muted first so video frame renders immediately
-              if (ref.current && !muted) {
-                ref.current.muted = true;
-                ref.current.play().catch(() => {});
+              if (mediaEl && !muted) {
+                mediaEl.muted = true;
+                mediaEl.play().catch(() => {});
               }
             }
           });
@@ -101,7 +145,7 @@ const Video = ({ stream, profilePic, muted = false, className = "w-full h-full o
       });
       stream.onaddtrack = play;
     }
-  }, [stream, muted]);
+  }, [stream, muted, hiddenVideo]);
 
   if (!stream && profilePic) {
     return (
@@ -119,21 +163,38 @@ const Video = ({ stream, profilePic, muted = false, className = "w-full h-full o
     );
   }
 
+  if (hiddenVideo) {
+    return (
+      <div className={`relative ${className} pointer-events-none`}>
+        <audio
+          ref={audioRef}
+          autoPlay
+          playsInline
+          muted={muted}
+          className="hidden"
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className={`relative ${className} ${hiddenVideo && !playError ? 'pointer-events-none' : ''}`}>
+    <div className={`relative ${className}`}>
       <video
-        ref={ref}
+        ref={videoRef}
         autoPlay
         playsInline
-        className={`w-full h-full object-cover ${hiddenVideo ? 'opacity-0' : ''}`}
-        style={{ objectFit: className?.includes('object-contain') ? 'contain' : 'cover' }}
+        className="w-full h-full object-cover"
+        style={{ 
+          objectFit: className?.includes('object-contain') ? 'contain' : 'cover',
+          transform: isMirrored ? 'scaleX(-1)' : undefined
+        }}
       />
       {playError && !muted && (
         <button 
           onClick={() => {
-            if (ref.current) {
-              ref.current.muted = false;
-              ref.current.play().then(() => setPlayError(false)).catch(e => console.error(e));
+            if (videoRef.current) {
+              videoRef.current.muted = false;
+              videoRef.current.play().then(() => setPlayError(false)).catch(e => console.error(e));
             }
           }}
           className="absolute bottom-3 left-3 z-30 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/80 text-[#dfb76c] border border-[#c5a059]/40 backdrop-blur-md cursor-pointer hover:bg-black transition-all"
@@ -150,12 +211,16 @@ const MaximizedVideoElement = ({
   stream, 
   muted, 
   isScreenSharing, 
-  language 
+  language,
+  isMirrored = false,
+  onToggleMirror
 }: { 
   stream: MediaStream; 
   muted: boolean; 
   isScreenSharing: boolean; 
   language: 'en' | 'vi';
+  isMirrored?: boolean;
+  onToggleMirror?: () => void;
 }) => {
   const ref = useRef<HTMLVideoElement>(null);
   const [playError, setPlayError] = useState(false);
@@ -351,7 +416,8 @@ const MaximizedVideoElement = ({
             fitMode === 'contain' ? 'object-contain' : 'object-cover'
           }`}
           style={{
-            backgroundColor: 'transparent'
+            backgroundColor: 'transparent',
+            transform: isMirrored && !isScreenSharing ? 'scaleX(-1)' : undefined
           }}
         />
 
@@ -394,6 +460,28 @@ const MaximizedVideoElement = ({
               : (language === 'vi' ? 'Lấp đầy (Fill)' : 'Fill Mode')}
           </span>
         </button>
+
+        {onToggleMirror && !isScreenSharing && (
+          <>
+            <div className="w-px h-4 bg-[#c5a059]/25" />
+            <button
+              onClick={onToggleMirror}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-serif font-medium transition-all cursor-pointer ${
+                isMirrored 
+                  ? 'text-[#dfb76c] bg-[#c5a059]/20 hover:bg-[#c5a059]/30' 
+                  : 'text-white/70 hover:bg-white/10 hover:text-white'
+              }`}
+              title={language === 'vi' ? 'Đổi hướng camera (Lật gương)' : 'Flip camera orientation'}
+            >
+              <FlipHorizontal size={14} className="text-[#c5a059]" />
+              <span>
+                {language === 'vi' 
+                  ? (isMirrored ? 'Lật gương (Bật)' : 'Lật gương (Tắt)') 
+                  : (isMirrored ? 'Mirrored (On)' : 'Mirrored (Off)')}
+              </span>
+            </button>
+          </>
+        )}
 
         <div className="w-px h-4 bg-[#c5a059]/25" />
 
@@ -446,7 +534,11 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     typeNotes: "Type your notes here...",
     ambience: "Ambience",
     lighting: "Lighting",
-    uploadPic: "Upload Profile Picture"
+    uploadPic: "Upload Profile Picture",
+    record: "Record",
+    recordings: "Recordings",
+    recordScreen: "Screen & Audio",
+    recordAudio: "Audio Only"
   },
   vi: {
     studyRoom: "Phòng Học",
@@ -466,7 +558,11 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     typeNotes: "Nhập ghi chú của bạn ở đây...",
     ambience: "Âm thanh",
     lighting: "Ánh sáng",
-    uploadPic: "Tải lên ảnh hồ sơ"
+    uploadPic: "Tải lên ảnh hồ sơ",
+    record: "Ghi lại",
+    recordings: "Bản ghi",
+    recordScreen: "Màn hình & âm thanh",
+    recordAudio: "Chỉ âm thanh"
   }
 };
 
@@ -491,6 +587,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
   const [isMuted, setIsMuted] = useState(true);
   const [isCameraOff, setIsCameraOff] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isCameraMirrored, setIsCameraMirrored] = useState(true);
   const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
   const [maximizedPeerId, setMaximizedPeerId] = useState<string | 'local' | null>(null);
   const [isWhiteboardOpen, setIsWhiteboardOpen] = useState(false);
@@ -503,6 +600,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
   const [activeVisualTheme, setActiveVisualTheme] = useState('lofi');
   
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
+  const screenAudioContextRef = useRef<AudioContext | null>(null);
   const [ambienceVolume, setAmbienceVolume] = useState(0.3);
 
   const localDisplayStream = useMemo(() => {
@@ -517,14 +615,67 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
     }
     return undefined;
   }, [isScreenSharing, isCameraOff, userStream]);
+
+  // Active View & Conditional Rendering for Video Grid to eliminate CPU and memory overhead
+  const [activeGridPage, setActiveGridPage] = useState(0);
+  const [isGridCollapsed, setIsGridCollapsed] = useState(false);
+  const GRID_PAGE_SIZE = 4; // Render at most 4 active video streams simultaneously
+
+  // Unified list of participants for video grid
+  const allGridParticipants = useMemo(() => {
+    return [
+      { id: 'local' as const, isLocal: true, peer: undefined as PeerState | undefined },
+      ...peers.map(p => ({ id: p.peerId, isLocal: false, peer: p }))
+    ];
+  }, [peers]);
+
+  const totalGridPages = Math.max(1, Math.ceil(allGridParticipants.length / GRID_PAGE_SIZE));
+  const safeActivePage = Math.min(activeGridPage, totalGridPages - 1);
+
+  // Automatically adjust active page if participants leave
+  useEffect(() => {
+    if (activeGridPage >= totalGridPages) {
+      setActiveGridPage(Math.max(0, totalGridPages - 1));
+    }
+  }, [totalGridPages, activeGridPage]);
+
+  // Participants currently on the active view
+  const visibleParticipants = useMemo(() => {
+    if (isGridCollapsed) return [];
+    const startIndex = safeActivePage * GRID_PAGE_SIZE;
+    return allGridParticipants.slice(startIndex, startIndex + GRID_PAGE_SIZE);
+  }, [allGridParticipants, safeActivePage, isGridCollapsed]);
+
+  const visibleParticipantIds = useMemo(() => {
+    return new Set(visibleParticipants.map(p => p.id));
+  }, [visibleParticipants]);
+
+  const isLocalVisibleOnActiveView = visibleParticipantIds.has('local');
+
+  // Peers who are NOT currently visible on the active view
+  const offscreenPeers = useMemo(() => {
+    return peers.filter(p => !visibleParticipantIds.has(p.peerId));
+  }, [peers, visibleParticipantIds]);
+
+  // Active speaker page tracking
+  const activeSpeakerPageIndex = useMemo(() => {
+    if (!activeSpeakerId || activeSpeakerId === 'local') return -1;
+    const idx = allGridParticipants.findIndex(p => p.id === activeSpeakerId);
+    return idx >= 0 ? Math.floor(idx / GRID_PAGE_SIZE) : -1;
+  }, [activeSpeakerId, allGridParticipants]);
   const [roomLight, setRoomLight] = useState(0.4);
   const [videoBlur, setVideoBlur] = useState(0);
   const [isUiVisible, setIsUiVisible] = useState(true);
   const hideUiTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    let lastMoveTime = 0;
     const handleMouseMove = () => {
-      setIsUiVisible(true);
+      const now = Date.now();
+      if (now - lastMoveTime > 300) {
+        lastMoveTime = now;
+        setIsUiVisible(true);
+      }
       if (hideUiTimeoutRef.current) {
         clearTimeout(hideUiTimeoutRef.current);
       }
@@ -545,7 +696,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
   }, []);
   const [isAmbienceMenuOpen, setIsAmbienceMenuOpen] = useState(false);
   const [profilePic, setProfilePic] = useState<string | undefined>(undefined);
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'goals' | 'notes' | 'participants' | null>(null);
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'goals' | 'notes' | 'participants' | 'recordings' | null>(null);
   const [completedSessionData, setCompletedSessionData] = useState<{ durationSeconds: number } | null>(null);
   const [notifications, setNotifications] = useState<{ id: string, message: string, type: 'info' | 'success' }[]>([]);
 
@@ -809,6 +960,261 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
       unsubscribe();
     };
   }, [roomId, myParticipantSessionId, myUserName, profilePic, language]);
+
+  // Session Screen & Audio Recording States
+  const [recordingsList, setRecordingsList] = useState<SessionRecordingItem[]>([]);
+  const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingType, setRecordingType] = useState<'screen' | 'audio' | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isRecordingPaused, setIsRecordingPaused] = useState(false);
+  const [previewRecording, setPreviewRecording] = useState<{ url: string; title: string; type: 'screen' | 'audio'; size?: number } | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const localBlobUrlsMap = useRef<Map<string, string>>(new Map());
+
+  // Real-time Firestore recordings synchronization for the room
+  useEffect(() => {
+    if (!roomId) return;
+    const recordingsPath = `rooms/${roomId}/recordings`;
+    const q = query(
+      collection(db, recordingsPath),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+
+    console.log(`[StudyRoom:Recordings] Subscribing to recordings in '${recordingsPath}'`);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items: SessionRecordingItem[] = snapshot.docs.map(docSnap => {
+        const data = docSnap.data();
+        let ts = Date.now();
+        if (data.createdAt?.toMillis) ts = data.createdAt.toMillis();
+        else if (data.createdAt?.seconds) ts = data.createdAt.seconds * 1000;
+
+        const localUrl = localBlobUrlsMap.current.get(docSnap.id);
+
+        return {
+          id: docSnap.id,
+          title: data.title || (language === 'vi' ? 'Bản ghi phòng học' : 'Study Session Recording'),
+          roomId: data.roomId || roomId,
+          type: data.type === 'audio' ? 'audio' : 'screen',
+          durationSeconds: data.durationSeconds || 0,
+          fileSizeBytes: data.fileSizeBytes,
+          mimeType: data.mimeType,
+          downloadUrl: localUrl || data.downloadUrl || '',
+          recordedById: data.recordedById || '',
+          recordedByName: data.recordedByName || (language === 'vi' ? 'Học viên' : 'Student'),
+          createdAt: ts
+        };
+      });
+
+      setRecordingsList(items);
+    }, (error) => {
+      console.warn("[StudyRoom:Recordings] Listener error:", error);
+      handleFirestoreError(error, OperationType.GET, recordingsPath);
+    });
+
+    return () => {
+      console.log(`[StudyRoom:Recordings] Unsubscribing from '${recordingsPath}'`);
+      unsubscribe();
+    };
+  }, [roomId, language]);
+
+  const startRecording = async (type: 'screen' | 'audio') => {
+    try {
+      let stream: MediaStream;
+      if (type === 'screen') {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true
+        });
+
+        // Optionally add local mic audio if enabled and available
+        if (userStream && !isMuted) {
+          const micTrack = userStream.getAudioTracks()[0];
+          if (micTrack) {
+            try {
+              stream.addTrack(micTrack.clone());
+            } catch (_) {}
+          }
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+      }
+
+      recordingStreamRef.current = stream;
+      recordedChunksRef.current = [];
+
+      let mimeType = '';
+      if (type === 'screen') {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+          mimeType = 'video/webm;codecs=vp9,opus';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          mimeType = 'video/webm';
+        } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+          mimeType = 'video/mp4';
+        }
+      } else {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          mimeType = 'audio/webm';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const finalBlob = new Blob(recordedChunksRef.current, {
+          type: mimeType || (type === 'screen' ? 'video/webm' : 'audio/webm')
+        });
+        const localBlobUrl = URL.createObjectURL(finalBlob);
+        const finalDuration = recordingDuration;
+
+        // Cleanup media tracks
+        if (recordingStreamRef.current) {
+          recordingStreamRef.current.getTracks().forEach(t => t.stop());
+          recordingStreamRef.current = null;
+        }
+
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const dateStr = new Date().toLocaleDateString();
+        const defaultTitle = type === 'screen'
+          ? (language === 'vi' ? `Bản ghi màn hình • ${timeStr} (${dateStr})` : `Screen Recording • ${timeStr} (${dateStr})`)
+          : (language === 'vi' ? `Bản ghi âm thanh • ${timeStr} (${dateStr})` : `Audio Recording • ${timeStr} (${dateStr})`);
+
+        const currentUserId = auth.currentUser?.uid || peerManagerRef.current?.getPeerId() || myPeerId || 'anon';
+        const recordingsPath = `rooms/${roomId}/recordings`;
+
+        try {
+          const docRef = await addDoc(collection(db, recordingsPath), {
+            title: defaultTitle,
+            roomId,
+            type,
+            durationSeconds: finalDuration,
+            fileSizeBytes: finalBlob.size,
+            mimeType: finalBlob.type,
+            downloadUrl: localBlobUrl,
+            recordedById: currentUserId,
+            recordedByName: myUserName,
+            createdAt: serverTimestamp()
+          });
+
+          localBlobUrlsMap.current.set(docRef.id, localBlobUrl);
+
+          setPreviewRecording({
+            url: localBlobUrl,
+            title: defaultTitle,
+            type,
+            size: finalBlob.size
+          });
+
+          addNotification(
+            language === 'vi' ? 'Đã lưu bản ghi phòng học vào Firestore thành công!' : 'Study recording saved to Firestore successfully!',
+            'success'
+          );
+        } catch (err) {
+          console.error("[StudyRoom:Recording] Error saving to Firestore:", err);
+          handleFirestoreError(err, OperationType.CREATE, recordingsPath);
+        }
+      };
+
+      // Auto stop if user clicks browser "Stop sharing" button
+      if (type === 'screen') {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            stopRecording();
+          };
+        }
+      }
+
+      recorder.start(1000);
+      setIsRecording(true);
+      setRecordingType(type);
+      setRecordingDuration(0);
+      setIsRecordingPaused(false);
+      setIsRecordingModalOpen(false);
+
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+
+      triggerHaptic('medium');
+      addNotification(
+        language === 'vi' 
+          ? `Bắt đầu ghi ${type === 'screen' ? 'màn hình & âm thanh' : 'âm thanh'}...` 
+          : `Started recording ${type === 'screen' ? 'screen & audio' : 'audio'}...`,
+        'info'
+      );
+    } catch (err: any) {
+      console.warn("[StudyRoom:Recording] Start error:", err);
+      if (err.name !== 'NotAllowedError') {
+        addNotification(language === 'vi' ? 'Không thể bắt đầu ghi âm/hình.' : 'Could not start recording.', 'info');
+      }
+    }
+  };
+
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.pause();
+      setIsRecordingPaused(true);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      triggerHaptic('light');
+    }
+  };
+
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+      setIsRecordingPaused(false);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+      triggerHaptic('light');
+    }
+  };
+
+  const stopRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+    setIsRecordingPaused(false);
+    triggerHaptic('success');
+  };
+
+  const deleteRecording = async (recordingId: string) => {
+    const recordingsPath = `rooms/${roomId}/recordings`;
+    try {
+      await deleteDoc(doc(db, 'rooms', roomId, 'recordings', recordingId));
+      addNotification(language === 'vi' ? 'Đã xóa bản ghi' : 'Recording deleted', 'info');
+    } catch (err) {
+      console.error("[StudyRoom:Recording] Delete error:", err);
+      handleFirestoreError(err, OperationType.DELETE, `${recordingsPath}/${recordingId}`);
+    }
+  };
 
   const handleMaximizePeer = useCallback((targetId: string | 'local') => {
     const isLocal = targetId === 'local';
@@ -1415,11 +1821,22 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
 
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
+      // Close active screen audio mixer
+      if (screenAudioContextRef.current) {
+        screenAudioContextRef.current.close().catch(() => {});
+        screenAudioContextRef.current = null;
+      }
       if (screenTrackRef.current) {
         screenTrackRef.current.stop();
         screenTrackRef.current = null;
       }
       setIsScreenSharing(false);
+
+      // Revert audio track back to microphone
+      const originalMicTrack = streamRef.current?.getAudioTracks()[0];
+      if (originalMicTrack && peerManagerRef.current) {
+        peerManagerRef.current.replaceAudioTrack(originalMicTrack);
+      }
       
       // Revert back to camera track if camera was on, or blank track if camera was off
       if (streamRef.current && !isCameraOff) {
@@ -1448,11 +1865,51 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
     }
 
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
       const screenTrack = screenStream.getVideoTracks()[0];
       if (!screenTrack) return;
       
       screenTrackRef.current = screenTrack;
+      const screenAudioTrack = screenStream.getAudioTracks()[0];
+
+      // Screen audio mixing with microphone
+      if (screenAudioTrack) {
+        try {
+          const micTrack = streamRef.current?.getAudioTracks()[0];
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioContextClass) {
+            const audioCtx = new AudioContextClass();
+            screenAudioContextRef.current = audioCtx;
+            const dest = audioCtx.createMediaStreamDestination();
+            
+            // Connect screen audio
+            const screenSource = audioCtx.createMediaStreamSource(new MediaStream([screenAudioTrack]));
+            screenSource.connect(dest);
+
+            // Connect microphone audio if present
+            if (micTrack) {
+              const micSource = audioCtx.createMediaStreamSource(new MediaStream([micTrack]));
+              micSource.connect(dest);
+            }
+
+            const mixedTrack = dest.stream.getAudioTracks()[0];
+            if (peerManagerRef.current && mixedTrack) {
+              peerManagerRef.current.replaceAudioTrack(mixedTrack);
+              console.log("[StudyRoom:ScreenAudio] Broadcasted mixed screen and mic audio to peers.");
+            }
+          } else if (peerManagerRef.current) {
+            peerManagerRef.current.replaceAudioTrack(screenAudioTrack);
+          }
+        } catch (audioMixErr) {
+          console.warn("[StudyRoom:ScreenAudio] Audio mixing fallback to direct screen audio:", audioMixErr);
+          if (peerManagerRef.current && screenAudioTrack) {
+            peerManagerRef.current.replaceAudioTrack(screenAudioTrack);
+          }
+        }
+      }
       
       screenTrack.onended = () => {
         toggleScreenShare(); // revert when stopped from browser chrome UI
@@ -1468,7 +1925,7 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
       setIsScreenSharing(true);
       setIsCameraOff(false);
       
-      // Update peers
+      // Update peers video
       if (peerManagerRef.current) {
         peerManagerRef.current.replaceVideoTrack(screenTrack);
       }
@@ -1640,15 +2097,15 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
         className="hidden"
         
       />
-      {VISUAL_THEMES.map(theme => (
+      {VISUAL_THEMES.filter(theme => theme.id === activeVisualTheme).map(theme => (
         <video 
           key={theme.id}
           autoPlay 
           loop 
           muted 
           playsInline 
-          className={`absolute inset-0 w-full h-full object-cover z-0 pointer-events-none transition-all duration-[1500ms] ease-in-out ${activeVisualTheme === theme.id ? 'opacity-100 scale-100' : 'opacity-0 scale-105'}`}
-          style={{ filter: activeVisualTheme === theme.id ? `blur(${videoBlur}px)` : 'blur(12px)' }}
+          className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none transition-all duration-[1500ms] ease-in-out opacity-100 scale-100"
+          style={{ filter: `blur(${videoBlur}px)` }}
           src={theme.url} 
         />
       ))}
@@ -2012,169 +2469,316 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
             )}
           </AnimatePresence>
 
-          {/* Video Grid (Zoom-style) */}
-          <motion.div 
-            drag
-            dragMomentum={false}
-            className="absolute right-4 md:right-8 top-24 md:top-32 z-30 grid gap-2 md:gap-3 p-2 md:p-3 liquid-glass-strong overflow-y-auto custom-scrollbar place-content-center items-center cursor-grab active:cursor-grabbing"
-            style={{ 
-              width: isMobile ? (peers.length === 0 ? '160px' : 'calc(100vw - 32px)') : '360px',
-              maxHeight: '60vh',
-              gridTemplateColumns: `repeat(${
-                Math.ceil(Math.sqrt(peers.length + 1))
-              }, minmax(0, 1fr))` 
-            }}
-          >
-            {/* User Video/Avatar */}
-            <motion.div layout className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === 'local' ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
+          {/* Video Grid (Zoom-style Active View & Conditional Rendering) */}
+          {isGridCollapsed ? (
+            <motion.div 
+              drag
+              dragMomentum={false}
+              className="absolute right-4 md:right-8 top-24 md:top-32 z-30 flex items-center gap-2.5 px-3.5 py-2 rounded-2xl liquid-glass-strong border border-white/20 hover:border-[#c5a059]/60 shadow-2xl text-white cursor-pointer select-none transition-all hover:scale-105"
+              onClick={() => {
+                triggerHaptic('light');
+                setIsGridCollapsed(false);
+              }}
             >
-              {maximizedPeerId === 'local' ? (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
-                  <Eye size={22} className="animate-pulse text-[#c5a059]" />
-                  <span className="text-[11px] font-serif font-medium tracking-wide">
-                    {language === 'vi' ? 'Bạn đang xem ở màn hình chính' : 'You are in focus view'}
+              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <div className="flex flex-col">
+                <span className="text-xs font-serif font-bold text-[#f5f0e6]">
+                  {language === 'vi' ? 'Lưới video đã thu gọn' : 'Video Grid Collapsed'}
+                </span>
+                <span className="text-[10px] text-white/50">
+                  {allGridParticipants.length} {language === 'vi' ? 'học viên trong phòng' : 'participants'}
+                </span>
+              </div>
+              <span className="text-[9px] uppercase font-bold text-[#dfb76c] px-2 py-0.5 rounded-full bg-[#c5a059]/20 border border-[#c5a059]/40 flex items-center gap-1">
+                <Cpu size={10} />
+                {language === 'vi' ? 'Tiết kiệm CPU' : 'Eco'}
+              </span>
+              <ChevronDown size={14} className="text-white/60 hover:text-white" />
+            </motion.div>
+          ) : (
+            <motion.div 
+              drag
+              dragMomentum={false}
+              className="absolute right-4 md:right-8 top-24 md:top-32 z-30 flex flex-col gap-2 p-2 md:p-3 liquid-glass-strong overflow-hidden shadow-2xl cursor-grab active:cursor-grabbing rounded-2xl border border-white/15"
+              style={{ 
+                width: isMobile ? (visibleParticipants.length === 1 ? '180px' : 'calc(100vw - 32px)') : (visibleParticipants.length === 1 ? '240px' : '360px'),
+                maxHeight: '65vh'
+              }}
+            >
+              {/* Active View Header */}
+              <div className="flex items-center justify-between px-1 pb-1 border-b border-white/10 text-xs select-none">
+                <div className="flex items-center gap-1.5 text-white/80 font-serif">
+                  <Cpu size={13} className="text-[#c5a059]" />
+                  <span className="text-[10px] uppercase tracking-wider text-[#dfb76c] font-bold">
+                    {language === 'vi' ? 'Khung nhìn' : 'Active View'}
+                  </span>
+                  <span className="text-[9px] text-white/40">
+                    ({visibleParticipants.length}/{allGridParticipants.length})
                   </span>
                 </div>
-              ) : isCameraOff && profilePic ? (
-                <img src={profilePic} alt="Me" className="w-full h-full object-cover" />
-              ) : !localDisplayStream ? (
-                <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 text-white/20">
-                  <User size={48} />
-                </div>
-              ) : (
-                <Video 
-                  stream={localDisplayStream} 
-                  muted 
-                  className={`w-full h-full bg-white/5 ${isScreenSharing ? 'object-contain' : 'object-cover'}`} 
-                />
-              )}
-              
-              <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                {myUserName} ({language === 'vi' ? 'Bạn' : 'You'})
-                {isMuted && <MicOff size={12} className="text-white ml-1" />}
-              </div>
 
-              {/* Maximize Button */}
-              <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  onClick={() => handleMaximizePeer('local')}
-                  className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
-                  title="Maximize"
-                >
-                  <Maximize2 size={18} />
-                </button>
-              </div>
-
-              {/* Reactions Overlay */}
-              <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
-                <AnimatePresence>
-                  {(reactions[peerManagerRef.current?.getPeerId() || 'local'] || []).map((r) => (
-                    <motion.div
-                      key={r.id}
-                      animate={{ 
-                        opacity: [0, 1, 1, 0],
-                      }}
-                      exit={{ opacity: 0 }}
-                      className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
-                    >
-                      {r.emoji}
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-
-            {/* Peer Videos/Avatars */}
-            {peers.map((peer) => {
-              const isCurrentlyMaximized = maximizedPeerId === peer.peerId;
-              const hasLiveVideoTrack = peer.stream
-                ? peer.stream.getVideoTracks().some(t => t.readyState === 'live' && t.enabled)
-                : false;
-
-              return (
-                <motion.div layout key={peer.peerId} className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === peer.peerId ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
-                >
-                  {isCurrentlyMaximized ? (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
-                      <Eye size={22} className="animate-pulse text-[#c5a059]" />
-                      <span className="text-[11px] font-serif font-medium tracking-wide">
-                        {language === 'vi' ? 'Đang phóng to trên màn hình chính' : 'In focus view'}
-                      </span>
-                    </div>
-                  ) : peer.stream && !peer.isCameraOff && !peer.isScreenSharing && hasLiveVideoTrack ? (
-                    <Video stream={peer.stream} className="max-w-full max-h-full object-cover rounded-xl shadow-2xl" />
-                  ) : peer.stream && peer.isScreenSharing && hasLiveVideoTrack ? (
-                    <Video stream={peer.stream} className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
-                  ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/40 bg-zinc-900/90 relative">
-                      {peer.stream && <Video stream={peer.stream} hiddenVideo={true} className="absolute inset-0" />}
-                      {peer.profilePic ? (
-                        <img src={peer.profilePic} alt={peer.userName} className="w-14 h-14 rounded-full object-cover border border-white/20 shadow-lg" />
-                      ) : (
-                        <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white text-xl font-bold">
-                          {(peer.userName || "H").charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      <span className="text-xs font-semibold text-white/80">{peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}</span>
-                      <span className="text-[10px] text-white/40 uppercase tracking-widest">
-                        {peer.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera off') : (language === 'vi' ? 'Sẵn sàng' : 'Ready')}
-                      </span>
-                    </div>
-                  )}
-                  <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                    {peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}
-                  </div>
-
-                  {/* Maximize Button for Peer */}
-                  <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => handleMaximizePeer(peer.peerId)}
-                      className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
-                      title={language === 'vi' ? 'Phóng to' : 'Maximize'}
-                    >
-                      <Maximize2 size={18} />
-                    </button>
-                  </div>
-
-                  {/* Reactions for Peer */}
-                  <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
-                    <AnimatePresence>
-                      {(reactions[peer.peerId] || []).map((r) => (
-                        <motion.div
-                          key={r.id}
-                          animate={{ 
-                            opacity: [0, 1, 1, 0],
-                          }}
-                          exit={{ opacity: 0 }}
-                          className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
-                        >
-                          {r.emoji}
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* Quick Reaction Bar */}
-                  <div className="absolute top-3 left-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {['👏', '🧠', '❤️', '🔥', '✨'].map(emoji => (
+                <div className="flex items-center gap-1.5">
+                  {totalGridPages > 1 && (
+                    <div className="flex items-center gap-1 bg-black/40 rounded-full px-1.5 py-0.5 border border-white/10">
                       <button
-                        key={emoji}
                         onClick={(e) => {
                           e.stopPropagation();
                           triggerHaptic('light');
-                          sendReaction(peer.peerId, emoji);
+                          setActiveGridPage(p => Math.max(0, p - 1));
                         }}
+                        disabled={safeActivePage === 0}
+                        className="p-1 rounded-full text-white/70 hover:text-white disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed transition-all"
+                        title={language === 'vi' ? 'Trang trước' : 'Previous page'}
                       >
-                        {emoji}
+                        <ChevronLeft size={12} />
                       </button>
-                    ))}
-                  </div>
-                </motion.div>
-              );
-            })}
-          </motion.div>
+                      <span className="text-[10px] font-mono px-1 text-[#dfb76c] font-bold">
+                        {safeActivePage + 1}/{totalGridPages}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          triggerHaptic('light');
+                          setActiveGridPage(p => Math.min(totalGridPages - 1, p + 1));
+                        }}
+                        disabled={safeActivePage >= totalGridPages - 1}
+                        className="p-1 rounded-full text-white/70 hover:text-white disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed transition-all"
+                        title={language === 'vi' ? 'Trang sau' : 'Next page'}
+                      >
+                        <ChevronRight size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      triggerHaptic('light');
+                      setIsGridCollapsed(true);
+                    }}
+                    className="p-1 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all cursor-pointer"
+                    title={language === 'vi' ? 'Thu gọn lưới (Tiết kiệm CPU)' : 'Collapse grid (Save CPU)'}
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Speaker on Another Page Notification */}
+              {activeSpeakerPageIndex >= 0 && activeSpeakerPageIndex !== safeActivePage && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    triggerHaptic('medium');
+                    setActiveGridPage(activeSpeakerPageIndex);
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 py-1 px-2.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 transition-all text-[10px] font-serif cursor-pointer animate-pulse"
+                >
+                  <Sparkles size={11} className="text-amber-400" />
+                  <span>
+                    {language === 'vi' 
+                      ? `Có người đang nói ở Trang ${activeSpeakerPageIndex + 1} • Bấm để xem` 
+                      : `Speaker on Page ${activeSpeakerPageIndex + 1} • Click to switch`}
+                  </span>
+                </button>
+              )}
+
+              {/* Active View Grid Tiles */}
+              <div 
+                className={`grid gap-2 md:gap-3 w-full overflow-y-auto custom-scrollbar ${
+                  visibleParticipants.length <= 1 ? 'grid-cols-1' : 'grid-cols-2'
+                }`}
+              >
+                {/* Render ONLY participants currently on the active view page */}
+                {visibleParticipants.map((item) => {
+                  if (item.isLocal) {
+                    return (
+                      <motion.div layout key="local" className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === 'local' ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
+                      >
+                        {maximizedPeerId === 'local' ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
+                            <Eye size={22} className="animate-pulse text-[#c5a059]" />
+                            <span className="text-[11px] font-serif font-medium tracking-wide">
+                              {language === 'vi' ? 'Bạn đang xem ở màn hình chính' : 'You are in focus view'}
+                            </span>
+                          </div>
+                        ) : isCameraOff && profilePic ? (
+                          <img src={profilePic} alt="Me" className="w-full h-full object-cover" />
+                        ) : !localDisplayStream ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 text-white/20">
+                            <User size={48} />
+                          </div>
+                        ) : (
+                          <Video 
+                            stream={localDisplayStream} 
+                            muted 
+                            isMirrored={!isScreenSharing && isCameraMirrored}
+                            className={`w-full h-full bg-white/5 ${isScreenSharing ? 'object-contain' : 'object-cover'}`} 
+                          />
+                        )}
+                        
+                        <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          {myUserName} ({language === 'vi' ? 'Bạn' : 'You'})
+                          {isMuted && <MicOff size={12} className="text-white ml-1" />}
+                        </div>
+
+                        {/* Local Video Controls (Flip Mirror & Maximize) */}
+                        <div className="absolute top-3 right-3 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                          {!isScreenSharing && !isCameraOff && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                triggerHaptic('light');
+                                setIsCameraMirrored(prev => {
+                                  const next = !prev;
+                                  addNotification(
+                                    language === 'vi' 
+                                      ? (next ? 'Đã đổi hướng camera: Lật gương' : 'Đã đổi hướng camera: Hướng thường') 
+                                      : (next ? 'Camera mirrored' : 'Camera normal'),
+                                    'info'
+                                  );
+                                  return next;
+                                });
+                              }}
+                              className={`w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center transition-all border cursor-pointer ${
+                                isCameraMirrored
+                                  ? 'bg-[#c5a059]/30 border-[#c5a059]/60 text-[#dfb76c] hover:bg-[#c5a059]/50'
+                                  : 'bg-black/50 border-white/20 text-white/80 hover:text-white hover:bg-black/70'
+                              }`}
+                              title={language === 'vi' ? 'Đổi hướng camera (Lật gương/Thường)' : 'Flip camera orientation'}
+                            >
+                              <FlipHorizontal size={15} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleMaximizePeer('local')}
+                            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
+                            title={language === 'vi' ? 'Phóng to' : 'Maximize'}
+                          >
+                            <Maximize2 size={16} />
+                          </button>
+                        </div>
+
+                        {/* Reactions Overlay */}
+                        <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
+                          <AnimatePresence>
+                            {(reactions[peerManagerRef.current?.getPeerId() || 'local'] || []).map((r) => (
+                              <motion.div
+                                key={r.id}
+                                animate={{ 
+                                  opacity: [0, 1, 1, 0],
+                                }}
+                                exit={{ opacity: 0 }}
+                                className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
+                              >
+                                {r.emoji}
+                              </motion.div>
+                            ))}
+                          </AnimatePresence>
+                        </div>
+                      </motion.div>
+                    );
+                  }
+
+                  const peer = item.peer!;
+                  const isCurrentlyMaximized = maximizedPeerId === peer.peerId;
+                  const hasLiveVideoTrack = peer.stream
+                    ? peer.stream.getVideoTracks().some(t => t.readyState === 'live' && t.enabled)
+                    : false;
+
+                  return (
+                    <motion.div layout key={peer.peerId} className={`relative w-full max-h-full aspect-video rounded-xl overflow-hidden bg-black shadow-lg group border transition-all duration-500 ${activeSpeakerId === peer.peerId ? 'border-[#dfb76c] ring-2 ring-[#dfb76c]/50' : 'border-white/10 hover:border-white/30'}`}
+                    >
+                      {isCurrentlyMaximized ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#171310] border border-[#c5a059]/40 text-[#dfb76c] p-4 text-center rounded-xl">
+                          <Eye size={22} className="animate-pulse text-[#c5a059]" />
+                          <span className="text-[11px] font-serif font-medium tracking-wide">
+                            {language === 'vi' ? 'Đang phóng to trên màn hình chính' : 'In focus view'}
+                          </span>
+                        </div>
+                      ) : peer.stream && !peer.isCameraOff && !peer.isScreenSharing && hasLiveVideoTrack ? (
+                        <Video stream={peer.stream} className="max-w-full max-h-full object-cover rounded-xl shadow-2xl" />
+                      ) : peer.stream && peer.isScreenSharing && hasLiveVideoTrack ? (
+                        <Video stream={peer.stream} className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/40 bg-zinc-900/90 relative">
+                          {peer.stream && <Video stream={peer.stream} hiddenVideo={true} className="absolute inset-0" />}
+                          {peer.profilePic ? (
+                            <img src={peer.profilePic} alt={peer.userName} className="w-14 h-14 rounded-full object-cover border border-white/20 shadow-lg" />
+                          ) : (
+                            <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white text-xl font-bold">
+                              {(peer.userName || "H").charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <span className="text-xs font-semibold text-white/80">{peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}</span>
+                          <span className="text-[10px] text-white/40 uppercase tracking-widest">
+                            {peer.isCameraOff ? (language === 'vi' ? 'Camera tắt' : 'Camera off') : (language === 'vi' ? 'Sẵn sàng' : 'Ready')}
+                          </span>
+                        </div>
+                      )}
+                      <div className="absolute bottom-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider text-white">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                        {peer.userName || (language === 'vi' ? 'Học viên' : 'Student')}
+                      </div>
+
+                      {/* Maximize Button for Peer */}
+                      <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleMaximizePeer(peer.peerId)}
+                          className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all border border-white/10 cursor-pointer"
+                          title={language === 'vi' ? 'Phóng to' : 'Maximize'}
+                        >
+                          <Maximize2 size={18} />
+                        </button>
+                      </div>
+
+                      {/* Reactions for Peer */}
+                      <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
+                        <AnimatePresence>
+                          {(reactions[peer.peerId] || []).map((r) => (
+                            <motion.div
+                              key={r.id}
+                              animate={{ 
+                                opacity: [0, 1, 1, 0],
+                              }}
+                              exit={{ opacity: 0 }}
+                              className="absolute bottom-10 left-1/2 -translate-x-1/2 text-3xl"
+                            >
+                              {r.emoji}
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                      </div>
+
+                      {/* Quick Reaction Bar */}
+                      <div className="absolute top-3 left-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {['👏', '🧠', '❤️', '🔥', '✨'].map(emoji => (
+                          <button
+                            key={emoji}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              triggerHaptic('light');
+                              sendReaction(peer.peerId, emoji);
+                            }}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+
+          {/* Off-screen Headless Audio: Continues audio transmission for non-visible peers with zero video decoder GPU/CPU overhead */}
+          {offscreenPeers.map(peer => (
+            peer.stream ? (
+              <HeadlessPeerAudio key={`headless-audio-${peer.peerId}`} stream={peer.stream} />
+            ) : null
+          ))}
 
           {/* Maximized Peer / Screen Overlay (High-Definition, No Black Screen) */}
           <AnimatePresence>
@@ -2276,9 +2880,23 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                       <div className="w-full h-full flex items-center justify-center relative">
                         <MaximizedVideoElement
                           stream={targetStream}
-                          muted={isMuted}
+                          muted={isLocal}
                           isScreenSharing={targetIsScreenSharing}
                           language={language}
+                          isMirrored={isLocal && !targetIsScreenSharing && isCameraMirrored}
+                          onToggleMirror={isLocal && !targetIsScreenSharing ? () => {
+                            triggerHaptic('light');
+                            setIsCameraMirrored(prev => {
+                              const next = !prev;
+                              addNotification(
+                                language === 'vi' 
+                                  ? (next ? 'Đã đổi hướng camera: Lật gương' : 'Đã đổi hướng camera: Hướng thường') 
+                                  : (next ? 'Camera mirrored' : 'Camera normal'),
+                                'info'
+                              );
+                              return next;
+                            });
+                          } : undefined}
                         />
                       </div>
                     ) : (
@@ -2368,10 +2986,11 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                     {activeSidebarTab === 'goals' && <ListTodo size={18} className="text-white" />}
                     {activeSidebarTab === 'notes' && <NotebookPen size={18} className="text-white" />}
                     {activeSidebarTab === 'participants' && <Users size={18} className="text-white" />}
+                    {activeSidebarTab === 'recordings' && <Disc size={18} className="text-[#c5a059]" />}
                   </div>
                   <div>
                     <span className="text-xs font-bold uppercase tracking-[0.2em] block">
-                      {activeSidebarTab === 'chat' ? t.chat : activeSidebarTab === 'goals' ? t.goals : activeSidebarTab === 'participants' ? t.participants : t.notes}
+                      {activeSidebarTab === 'chat' ? t.chat : activeSidebarTab === 'goals' ? t.goals : activeSidebarTab === 'participants' ? t.participants : activeSidebarTab === 'recordings' ? t.recordings : t.notes}
                     </span>
                     <span className="text-[9px] text-white/30 uppercase tracking-widest">Collaborative Space</span>
                   </div>
@@ -2385,12 +3004,12 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
               </div>
 
               {/* Sidebar Tabs Switcher */}
-              <div className="flex border-b border-white/10">
-                {(['chat', 'goals', 'notes', 'participants'] as const).map((tab) => (
+              <div className="flex border-b border-white/10 overflow-x-auto hide-scrollbar">
+                {(['chat', 'goals', 'notes', 'participants', 'recordings'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => { triggerHaptic('light'); setActiveSidebarTab(tab); }}
-                    className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest transition-all relative flex items-center justify-center gap-1.5 ${
+                    className={`flex-1 min-w-[58px] py-3 text-[10px] font-bold uppercase tracking-wider transition-all relative flex items-center justify-center gap-1 shrink-0 ${
                       activeSidebarTab === tab ? "text-white border-b-2 border-white/80"
                       : 'text-white/40 hover:text-white/70'
                     }`}
@@ -2399,12 +3018,18 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                       {tab === 'chat' ? (language === "vi" ? "Chat" : "Chat") : 
                        tab === 'goals' ? (language === "vi" ? "Tiêu" : "Goals") : 
                        tab === 'notes' ? (language === "vi" ? "Ghi" : "Notes") : 
-                       tab === 'participants' ? (language === "vi" ? "Người" : "Users") : ""
+                       tab === 'participants' ? (language === "vi" ? "Người" : "Users") : 
+                       (language === "vi" ? "Bản ghi" : "Rec")
                       }
                     </span>
                     {tab === 'chat' && unreadChatCount > 0 && activeSidebarTab !== 'chat' && (
                       <span className="px-1.5 py-0.5 min-w-[18px] text-center bg-[#c5a059] text-black text-[9px] font-black rounded-full shadow-sm animate-pulse">
                         {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                      </span>
+                    )}
+                    {tab === 'recordings' && recordingsList.length > 0 && (
+                      <span className="px-1.5 py-0.2 min-w-[16px] text-center bg-white/20 text-white text-[8px] font-mono font-bold rounded-full">
+                        {recordingsList.length}
                       </span>
                     )}
                   </button>
@@ -2732,7 +3357,133 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                   </div>
                 )}
 
+                {activeSidebarTab === 'recordings' && (
+                  <div className="flex-1 flex flex-col h-full overflow-hidden pt-3">
+                    {/* Header bar */}
+                    <div className="px-3 py-2 mb-3 bg-[#c5a059]/10 border border-[#c5a059]/20 rounded-xl flex items-center justify-between text-xs text-[#f5ebd7] shrink-0">
+                      <div className="flex items-center gap-1.5 font-serif text-[#d4af37]">
+                        <Disc size={14} className={isRecording ? "animate-spin text-red-400" : ""} />
+                        <span className="font-bold">{language === 'vi' ? 'Bản ghi phòng học' : 'Room Recordings'}</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (isRecording) {
+                            stopRecording();
+                          } else {
+                            setIsRecordingModalOpen(true);
+                          }
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                          isRecording 
+                            ? 'bg-red-500 text-white animate-pulse' 
+                            : 'bg-gradient-to-r from-[#c5a059] to-[#996515] text-[#161007] hover:brightness-110 shadow-sm'
+                        }`}
+                      >
+                        {isRecording ? <Square size={10} fill="currentColor" /> : <CircleDot size={10} />}
+                        <span>{isRecording ? (language === 'vi' ? 'Dừng ghi' : 'Stop') : (language === 'vi' ? '+ Ghi mới' : '+ New')}</span>
+                      </button>
+                    </div>
 
+                    {/* Recordings list */}
+                    <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 px-1 pb-4">
+                      {recordingsList.length === 0 ? (
+                        <div className="py-12 px-4 text-center border border-dashed border-[#c5a059]/20 rounded-2xl bg-[#1c1611]/30">
+                          <CircleDot size={32} className="mx-auto mb-2 text-[#c5a059]/40" />
+                          <p className="text-xs font-serif font-medium text-[#e6ded3] mb-1">
+                            {language === 'vi' ? 'Chưa có bản ghi nào' : 'No recordings yet'}
+                          </p>
+                          <p className="text-[10px] text-[#a69684]/70 leading-relaxed max-w-[220px] mx-auto mb-4">
+                            {language === 'vi'
+                              ? 'Ghi lại màn hình hoặc âm thanh buổi học trực tiếp và lưu trữ vào Firestore.'
+                              : 'Record session screen or audio directly and save to Firestore.'}
+                          </p>
+                          <button
+                            onClick={() => setIsRecordingModalOpen(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs text-[#f5ebd7] transition-all font-serif cursor-pointer"
+                          >
+                            <CircleDot size={13} className="text-red-400" />
+                            <span>{language === 'vi' ? 'Bắt đầu ghi đầu tiên' : 'Start first recording'}</span>
+                          </button>
+                        </div>
+                      ) : (
+                        recordingsList.map((rec) => {
+                          const currentUserId = auth.currentUser?.uid || peerManagerRef.current?.getPeerId() || myPeerId;
+                          const canDelete = rec.recordedById === currentUserId || isHost;
+                          const isScreen = rec.type === 'screen';
+                          const sizeMB = rec.fileSizeBytes ? (rec.fileSizeBytes / (1024 * 1024)).toFixed(1) : null;
+
+                          return (
+                            <div
+                              key={rec.id}
+                              className="p-3.5 rounded-2xl bg-[#1c1611]/90 border border-[#c5a059]/25 hover:border-[#c5a059]/50 transition-all flex flex-col gap-2.5 shadow-md group"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-start gap-2.5">
+                                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                                    isScreen ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  }`}>
+                                    {isScreen ? <Monitor size={15} /> : <Mic size={15} />}
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-xs font-serif font-bold text-[#f5ebd7] line-clamp-1">
+                                      {rec.title}
+                                    </span>
+                                    <div className="flex items-center gap-2 mt-0.5 text-[9px] text-[#a69684]">
+                                      <span className="font-mono text-[#d4af37]">{formatTime(rec.durationSeconds)}</span>
+                                      {sizeMB && <span>• {sizeMB} MB</span>}
+                                      <span>• {rec.recordedByName}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {canDelete && (
+                                  <button
+                                    onClick={() => deleteRecording(rec.id)}
+                                    className="opacity-0 group-hover:opacity-100 p-1 text-white/30 hover:text-red-400 transition-all cursor-pointer"
+                                    title={language === 'vi' ? 'Xóa bản ghi' : 'Delete recording'}
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 pt-1 border-t border-white/5">
+                                {rec.downloadUrl ? (
+                                  <>
+                                    <button
+                                      onClick={() => setPreviewRecording({
+                                        url: rec.downloadUrl!,
+                                        title: rec.title,
+                                        type: rec.type,
+                                        size: rec.fileSizeBytes
+                                      })}
+                                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#f5ebd7] text-[10px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                                    >
+                                      <Play size={11} fill="currentColor" />
+                                      <span>{language === 'vi' ? 'Phát bản ghi' : 'Play Preview'}</span>
+                                    </button>
+                                    <a
+                                      href={rec.downloadUrl}
+                                      download={`${rec.title.replace(/[\s/\\:]+/g, '_')}.webm`}
+                                      className="p-1.5 rounded-lg bg-[#c5a059]/20 hover:bg-[#c5a059]/30 text-[#e8c872] transition-all cursor-pointer"
+                                      title={language === 'vi' ? 'Tải tệp về máy' : 'Download File'}
+                                    >
+                                      <Download size={13} />
+                                    </a>
+                                  </>
+                                ) : (
+                                  <span className="text-[9px] text-[#a69684]/60 italic">
+                                    {language === 'vi' ? 'Đã lưu siêu dữ liệu vào Firestore' : 'Metadata recorded in Firestore'}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 </motion.aside>
           )}
@@ -2893,10 +3644,43 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
         >
           <div className="relative">
             <Users size={20} className="md:size-6" />
-            <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-blue-500 rounded-full text-[9px] flex items-center justify-center text-white font-black border-2 border-zinc-900 shadow-lg">
-              {peers.length + 1}
+            <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-[#c5a059] rounded-full text-[9px] flex items-center justify-center text-black font-black border-2 border-zinc-900 shadow-lg">
+              {firestoreParticipants.length}
             </span>
           </div>
+        </button>
+
+        <button 
+          onClick={() => {
+            triggerHaptic('light');
+            if (isRecording) {
+              stopRecording();
+            } else {
+              setIsRecordingModalOpen(true);
+            }
+          }}
+          className={`relative w-12 h-12 md:w-14 md:h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all cursor-pointer ${
+            isRecording 
+              ? 'bg-red-600 text-white shadow-lg shadow-red-600/40 scale-110 animate-pulse' 
+              : activeSidebarTab === 'recordings'
+                ? 'bg-[#c5a059] text-[#161007] shadow-lg shadow-[#c5a059]/25 scale-110'
+                : 'bg-white/10 hover:bg-white/20 text-white'
+          }`}
+          title={isRecording 
+            ? (language === 'vi' ? 'Đang ghi âm/hình - Bấm để Dừng & Lưu' : 'Recording - Click to Stop & Save') 
+            : (language === 'vi' ? 'Ghi lại phiên học (Màn hình / Âm thanh)' : 'Record study session (Screen / Audio)')
+          }
+        >
+          {isRecording ? <Square size={18} fill="currentColor" /> : <CircleDot size={20} className="md:size-6 text-red-400" />}
+          {isRecording ? (
+            <span className="absolute -top-1 -right-1 px-1.5 py-0.2 bg-red-600 text-white text-[8px] font-black rounded-full border border-black animate-ping">
+              REC
+            </span>
+          ) : recordingsList.length > 0 ? (
+            <span className="absolute -top-1 -right-1 min-w-[18px] h-4.5 px-1 bg-white/20 text-white text-[9px] font-mono font-bold rounded-full flex items-center justify-center border border-black">
+              {recordingsList.length}
+            </span>
+          ) : null}
         </button>
 
         <div className="w-px h-8 bg-white/10 mx-1 md:mx-2 flex-shrink-0" />
@@ -2937,14 +3721,42 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
           {isMuted ? <MicOff size={20} className="md:size-6" /> : <Mic size={20} className="md:size-6" />}
         </button>
 
-        <button 
-          onClick={() => { triggerHaptic('medium'); toggleCamera(); }}
-          className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all ${
-            isCameraOff ? 'bg-white text-black shadow-lg shadow-white/20' : 'bg-white/10 hover:bg-white/20 text-white'
-          }`}
-        >
-          {isCameraOff ? <CameraOff size={20} className="md:size-6" /> : <Camera size={20} className="md:size-6" />}
-        </button>
+        <div className="relative flex items-center shrink-0">
+          <button 
+            onClick={() => { triggerHaptic('medium'); toggleCamera(); }}
+            className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all ${
+              isCameraOff ? 'bg-white text-black shadow-lg shadow-white/20' : 'bg-white/10 hover:bg-white/20 text-white'
+            }`}
+            title={language === 'vi' ? (isCameraOff ? 'Bật Camera' : 'Tắt Camera') : (isCameraOff ? 'Turn on Camera' : 'Turn off Camera')}
+          >
+            {isCameraOff ? <CameraOff size={20} className="md:size-6" /> : <Camera size={20} className="md:size-6" />}
+          </button>
+          {!isCameraOff && !isScreenSharing && (
+            <button
+              onClick={() => {
+                triggerHaptic('light');
+                setIsCameraMirrored(prev => {
+                  const next = !prev;
+                  addNotification(
+                    language === 'vi' 
+                      ? (next ? 'Đã đổi hướng camera: Lật gương (Tự nhiên)' : 'Đã đổi hướng camera: Hướng thường') 
+                      : (next ? 'Camera mirrored' : 'Camera normal'),
+                    'info'
+                  );
+                  return next;
+                });
+              }}
+              className={`absolute -top-1 -right-1 w-6 h-6 rounded-full border shadow-md flex items-center justify-center transition-all cursor-pointer ${
+                isCameraMirrored 
+                  ? 'bg-[#c5a059] border-[#dfb76c] text-[#16110c] hover:scale-110' 
+                  : 'bg-zinc-800 border-white/30 text-white/80 hover:text-white'
+              }`}
+              title={language === 'vi' ? (isCameraMirrored ? 'Đang lật gương (Tự nhiên) • Bấm để đổi hướng' : 'Đang hướng thường • Bấm để đổi hướng') : 'Flip camera orientation'}
+            >
+              <FlipHorizontal size={13} />
+            </button>
+          )}
+        </div>
 
         <button 
           onClick={() => { triggerHaptic('medium'); toggleScreenShare(); }}
@@ -3282,6 +4094,234 @@ const StudyRoom: React.FC<StudyRoomProps> = ({ roomId, initialPin, createPrivate
                   <Check size={16} />
                   <span>{language === 'vi' ? 'Lưu thay đổi' : 'Save Changes'}</span>
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating Active Recording Status Banner */}
+      <AnimatePresence>
+        {isRecording && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: -20, x: '-50%' }}
+            className="fixed top-20 left-1/2 z-[110] px-4 py-2 rounded-full bg-black/90 border border-red-500/50 shadow-2xl backdrop-blur-md flex items-center gap-3 text-white pointer-events-auto"
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
+              <span className="text-xs font-black tracking-widest text-red-400">REC</span>
+            </div>
+            <span className="text-xs font-mono font-bold text-white/90 tabular-nums">
+              {formatTime(recordingDuration)}
+            </span>
+            <span className="text-[10px] uppercase font-serif text-[#c5a059] px-2 py-0.5 rounded-full bg-[#c5a059]/15 border border-[#c5a059]/30">
+              {recordingType === 'screen' ? (language === 'vi' ? 'Màn hình & Mic' : 'Screen & Audio') : (language === 'vi' ? 'Chỉ âm thanh' : 'Audio Only')}
+            </span>
+            <div className="flex items-center gap-1.5 pl-2 border-l border-white/20">
+              <button
+                onClick={isRecordingPaused ? resumeRecording : pauseRecording}
+                className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white/90 hover:text-white transition-all text-xs cursor-pointer"
+                title={isRecordingPaused ? (language === 'vi' ? 'Tiếp tục ghi' : 'Resume') : (language === 'vi' ? 'Tạm dừng' : 'Pause')}
+              >
+                {isRecordingPaused ? <Play size={12} fill="currentColor" /> : <Pause size={12} fill="currentColor" />}
+              </button>
+              <button
+                onClick={stopRecording}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
+                title={language === 'vi' ? 'Dừng & Lưu bản ghi vào Firestore' : 'Stop & Save to Firestore'}
+              >
+                <Square size={11} fill="currentColor" />
+                <span>{language === 'vi' ? 'Dừng' : 'Stop'}</span>
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Recording Starter Modal */}
+      <AnimatePresence>
+        {isRecordingModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-md flex items-center justify-center p-4 pointer-events-auto"
+            onClick={() => setIsRecordingModalOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#17120c] border border-[#c5a059]/40 rounded-3xl p-6 max-w-md w-full shadow-2xl text-[#f5ebd7]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-4 border-b border-[#c5a059]/20 mb-5">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400">
+                    <CircleDot size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-serif font-bold text-[#f5f0e6]">
+                      {language === 'vi' ? 'Ghi lại phiên học' : 'Record Study Session'}
+                    </h3>
+                    <p className="text-[10px] text-[#a69684]/80">
+                      {language === 'vi' ? 'Lưu trữ trực tiếp và liên kết trong Firestore' : 'Stored directly and linked in Firestore'}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setIsRecordingModalOpen(false)} className="text-white/40 hover:text-white cursor-pointer">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3 mb-6">
+                {/* Option 1: Screen + Audio */}
+                <button
+                  onClick={() => startRecording('screen')}
+                  className="w-full p-4 rounded-2xl bg-[#241b13]/80 border border-[#c5a059]/30 hover:border-[#d4af37] hover:bg-[#2e2319] transition-all text-left flex items-start gap-3.5 group cursor-pointer"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0 group-hover:scale-105 transition-transform">
+                    <Monitor size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-xs font-serif font-bold text-[#f5ebd7] group-hover:text-[#e8c872]">
+                        {language === 'vi' ? 'Ghi màn hình & âm thanh' : 'Screen & Audio Recording'}
+                      </span>
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-mono">
+                        Video WebM
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#a69684] leading-relaxed">
+                      {language === 'vi'
+                        ? 'Thu lại màn hình bài giảng, slide hoặc chia sẻ bài tập cùng âm thanh trao đổi.'
+                        : 'Captures screen presentations, slides, and shared exercises with room dialogue.'}
+                    </p>
+                  </div>
+                </button>
+
+                {/* Option 2: Audio Only */}
+                <button
+                  onClick={() => startRecording('audio')}
+                  className="w-full p-4 rounded-2xl bg-[#241b13]/80 border border-[#c5a059]/30 hover:border-[#d4af37] hover:bg-[#2e2319] transition-all text-left flex items-start gap-3.5 group cursor-pointer"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 group-hover:scale-105 transition-transform">
+                    <Mic size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-xs font-serif font-bold text-[#f5ebd7] group-hover:text-[#e8c872]">
+                        {language === 'vi' ? 'Chỉ ghi âm thanh' : 'Audio Only Recording'}
+                      </span>
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono">
+                        Audio WebM
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#a69684] leading-relaxed">
+                      {language === 'vi'
+                        ? 'Dung lượng nhẹ, ghi lại cuộc thảo luận giọng nói và các phát biểu trong phòng.'
+                        : 'Lightweight format capturing voice discussions and lecture dialogues.'}
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              <div className="flex justify-between items-center pt-3 border-t border-[#c5a059]/20 text-[11px]">
+                <button
+                  onClick={() => {
+                    setIsRecordingModalOpen(false);
+                    setActiveSidebarTab('recordings');
+                  }}
+                  className="text-[#d4af37] hover:underline flex items-center gap-1 cursor-pointer font-serif"
+                >
+                  <span>{language === 'vi' ? 'Xem các bản ghi trước' : 'View existing recordings'}</span>
+                  <span className="text-[10px] font-mono opacity-80">({recordingsList.length})</span>
+                </button>
+                <button
+                  onClick={() => setIsRecordingModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium cursor-pointer"
+                >
+                  {language === 'vi' ? 'Đóng' : 'Close'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Preview / Playback & Download Modal */}
+      <AnimatePresence>
+        {previewRecording && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[130] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 pointer-events-auto"
+            onClick={() => setPreviewRecording(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#17120c] border border-[#c5a059]/40 rounded-3xl p-6 max-w-xl w-full shadow-2xl text-[#f5ebd7] flex flex-col gap-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-[#c5a059]/20">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={18} className="text-emerald-400" />
+                  <h3 className="text-base font-serif font-bold text-[#f5f0e6] truncate max-w-xs sm:max-w-md">
+                    {previewRecording.title}
+                  </h3>
+                </div>
+                <button onClick={() => setPreviewRecording(null)} className="text-white/40 hover:text-white cursor-pointer">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl overflow-hidden bg-black/70 border border-[#c5a059]/20 max-h-[360px] flex items-center justify-center">
+                {previewRecording.type === 'screen' ? (
+                  <video
+                    src={previewRecording.url}
+                    controls
+                    autoPlay
+                    className="w-full h-auto max-h-[350px] object-contain rounded-2xl"
+                  />
+                ) : (
+                  <div className="py-12 px-6 w-full flex flex-col items-center justify-center gap-4">
+                    <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                      <Mic size={32} />
+                    </div>
+                    <audio src={previewRecording.url} controls className="w-full max-w-md mt-2" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                <div className="text-[11px] text-[#a69684]">
+                  {previewRecording.size ? (
+                    <span>{language === 'vi' ? 'Dung lượng:' : 'Size:'} {(previewRecording.size / (1024 * 1024)).toFixed(2)} MB • {language === 'vi' ? 'Đã lưu Firestore' : 'Saved to Firestore'}</span>
+                  ) : (
+                    <span>{language === 'vi' ? 'Đã lưu trên Firestore' : 'Saved to Firestore'}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <a
+                    href={previewRecording.url}
+                    download={`${previewRecording.title.replace(/[\s/\\:]+/g, '_')}.webm`}
+                    className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#c5a059] to-[#996515] text-[#161007] font-semibold text-xs hover:brightness-110 active:scale-95 transition-all shadow-md cursor-pointer"
+                  >
+                    <Download size={15} />
+                    <span>{language === 'vi' ? 'Tải xuống tệp' : 'Download File'}</span>
+                  </a>
+                  <button
+                    onClick={() => setPreviewRecording(null)}
+                    className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    {language === 'vi' ? 'Đóng' : 'Close'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
